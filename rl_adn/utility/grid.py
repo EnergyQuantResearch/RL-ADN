@@ -408,7 +408,7 @@ class GridTensor:
 
         return M_big, H_big
 
-    def reshape_tensor(sefl, tensor_array):
+    def reshape_tensor(self, tensor_array):
         """
         Reshapes a tensor array for power flow calculations.
 
