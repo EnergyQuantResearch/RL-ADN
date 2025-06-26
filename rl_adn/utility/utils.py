@@ -387,3 +387,48 @@ def net_test(net):
 
     return True
 
+
+def test_create_pandapower_net(network_info=None):
+    """Test for ``create_pandapower_net``.
+
+    Creates a network using the provided ``network_info`` or a default
+    34 node test network. The function prints the configuration and a
+    summary of the resulting pandapower ``net`` object.
+    """
+    if network_info is None:
+        data_dir = os.path.abspath(
+            os.path.join(os.path.dirname(__file__), '..', 'data_sources',
+                         'network_data', 'node_34')
+        )
+        network_info = {
+            'branch_info_file': os.path.join(data_dir, 'Lines_34.csv'),
+            'bus_info_file': os.path.join(data_dir, 'Nodes_34.csv'),
+            'vm_pu': 1.0,
+            's_base': 1000,
+        }
+
+    print('Network configuration:')
+    for key, value in network_info.items():
+        print(f"  {key}: {value}")
+
+    net = create_pandapower_net(network_info)
+    print('\nCreated pandapower network:')
+    print(net)
+    print('\nBus data:')
+    print(net.bus)
+    print('\nLine data:')
+    print(net.line)
+    print('\nLoad data:')
+    print(net.load)
+    return net
+
+def test_plot_pandapower_net(net):
+    """Simple wrapper to plot a pandapower network."""
+    print('Plotting pandapower network...')
+    plot_pandapower_net(net)
+
+
+if __name__ == "__main__":
+    test_net = test_create_pandapower_net()
+    test_plot_pandapower_net(test_net)
+
