@@ -7,7 +7,7 @@ import os
 def test_GeneralPowerDataManager():
     # Generate sample data
     sample_data = {
-        'date_time': pd.date_range(start='2021-01-01', periods=24 * 30, freq='H'),
+        'date_time': pd.date_range(start='2021-01-01', periods=24 * 30, freq='H', tz='UTC'),
         'active_power_node_1': np.random.rand(24 * 30),
         'active_power_node_2': np.random.rand(24 * 30),
         'reactive_power_node_1': np.random.rand(24 * 30),
@@ -48,4 +48,3 @@ def test_GeneralPowerDataManager():
 
     # Cleanup
     os.remove(datapath)
-test_GeneralPowerDataManager()
