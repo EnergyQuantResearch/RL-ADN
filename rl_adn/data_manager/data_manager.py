@@ -7,10 +7,9 @@ data loading, cleaning, and basic manipulations.
 
 
 
-from typing import List, Tuple, Union
+from typing import List, Tuple
 import pandas as pd
 import numpy as np
-from numpy import array
 import random
 import re
 
@@ -43,33 +42,30 @@ class GeneralPowerDataManager:
             raise ValueError("Please input the correct datapath")
 
         data = pd.read_csv(datapath)
+        if data.empty:
+            raise ValueError("The provided dataset is empty and cannot be processed")
 
-        # Check if 'date_time' column exists
-        if 'date_time' in data.columns:
-            data.set_index('date_time', inplace=True)
-        else:
-            first_col = data.columns[0]
-            data.set_index(first_col, inplace=True)
-
-        data.index = pd.to_datetime(data.index)
+        # Prepare a datetime index and keep the DataFrame sorted for predictable slicing.
+        data = self._prepare_datetime_index(data)
 
         # Print data scale and initialize time interval
         min_date = data.index.min()
         max_date = data.index.max()
         print(f"Data scale: from {min_date.strftime('%Y-%m-%d')} to {max_date.strftime('%Y-%m-%d')}")
 
-        self.time_interval = int((data.index[1] - data.index[0]).seconds / 60)
+        self.time_interval = self._infer_time_interval(data.index)
         print(f"Data time interval: {self.time_interval} minutes")
 
         # Initialize other attributes
         self.df = data
         self.data_array = data.values
 
-        self.active_power_cols = [col for col in self.df.columns if re.fullmatch(r'active_power(_\w+)?', col)]
-        self.reactive_power_cols = [col for col in self.df.columns if re.fullmatch(r'reactive_power(_\w+)?', col)]
-        self.renewable_active_power_cols = [col for col in self.df.columns if re.fullmatch(r'renewable_active_power(_\w+)?', col)]
-        self.renewable_reactive_power_cols = [col for col in self.df.columns if re.fullmatch(r'renewable_reactive_power(_\w+)?', col)]
-        self.price_col = [col for col in self.df.columns if re.fullmatch(r'price(_\w+)?', col)]
+        # Identify columns matching expected patterns for later use.
+        self.active_power_cols = self._get_columns_matching(r'active_power(_\w+)?')
+        self.reactive_power_cols = self._get_columns_matching(r'reactive_power(_\w+)?')
+        self.renewable_active_power_cols = self._get_columns_matching(r'renewable_active_power(_\w+)?')
+        self.renewable_reactive_power_cols = self._get_columns_matching(r'renewable_reactive_power(_\w+)?')
+        self.price_col = self._get_columns_matching(r'price(_\w+)?')
         # Display dataset information
         print(f"Dataset loaded from {datapath}")
         print(f"Dataset dimensions: {self.df.shape}")
@@ -107,6 +103,47 @@ class GeneralPowerDataManager:
         self.split_data_set()
         self._replace_nan()
         self._check_for_nan()
+
+    def _prepare_datetime_index(self, data: pd.DataFrame) -> pd.DataFrame:
+        """
+        Prepare and validate the datetime index used across the manager.
+
+        This keeps the index conversion and sorting in a single place so other
+        methods can assume a consistent, timezone-aware index.
+        """
+        index_column = 'date_time' if 'date_time' in data.columns else data.columns[0]
+
+        # Copy to avoid mutating the caller's DataFrame unexpectedly.
+        data = data.copy()
+        data.set_index(index_column, inplace=True)
+
+        try:
+            data.index = pd.to_datetime(data.index)
+        except (ValueError, TypeError) as exc:
+            raise ValueError("Failed to parse the index into datetime values") from exc
+
+        data.sort_index(inplace=True)
+        return data
+
+    def _infer_time_interval(self, index: pd.DatetimeIndex) -> int:
+        """Infer the time interval in minutes from the datetime index."""
+        if len(index) < 2:
+            raise ValueError("At least two records are required to infer the time interval")
+
+        # Use the mode of the time differences to stay robust to occasional gaps.
+        deltas = index.to_series().diff().dropna().dt.total_seconds()
+        if deltas.empty or (deltas <= 0).any():
+            raise ValueError("Invalid or non-increasing timestamps detected in the dataset")
+
+        interval_minutes = int(deltas.mode().iloc[0] / 60)
+        if interval_minutes == 0:
+            raise ValueError("Computed time interval is zero minutes, please verify the input data")
+
+        return interval_minutes
+
+    def _get_columns_matching(self, pattern: str) -> List[str]:
+        """Return column names that match the provided regex pattern."""
+        return [col for col in self.df.columns if re.fullmatch(pattern, col)]
 
 
     def _replace_nan(self) -> None:
@@ -166,9 +203,8 @@ class GeneralPowerDataManager:
                Returns:
                    List[Tuple[int, int, int]]: A list of available dates as (year, month, day).
                """
-        dates = self.df.index.strftime('%Y-%m-%d').unique()
-        year_month_day = [(int(date[:4]), int(date[5:7]), int(date[8:10])) for date in dates]
-        return year_month_day
+        normalized_dates = self.df.index.normalize().unique()
+        return [(ts.year, ts.month, ts.day) for ts in normalized_dates]
 
     def random_date(self) -> Tuple[int, int, int]:
         """
@@ -187,17 +223,22 @@ class GeneralPowerDataManager:
         The first three weeks of each month are used for training and the last week for testing.
         """
         all_dates = self.list_dates()
-        all_dates.sort(key=lambda x: (x[0], x[1], x[2]))  # Sort dates
+        if not all_dates:
+            self.train_dates = []
+            self.test_dates = []
+            return
 
-        train_dates = []
-        test_dates = []
+        all_dates.sort(key=lambda x: (x[0], x[1], x[2]))  # Ensure chronological order
 
-        current_month = all_dates[0][1]
-        current_year = all_dates[0][0]
-        monthly_dates = []
+        train_dates: List[Tuple[int, int, int]] = []
+        test_dates: List[Tuple[int, int, int]] = []
+
+        # Group by year and month to avoid repeated logic in the loop.
+        current_year, current_month = all_dates[0][0], all_dates[0][1]
+        monthly_dates: List[Tuple[int, int, int]] = []
 
         for date in all_dates:
-            year, month, day = date
+            year, month, _ = date
             if month != current_month or year != current_year:
                 # Sort monthly dates and split into train and test
                 monthly_dates.sort()
@@ -213,7 +254,7 @@ class GeneralPowerDataManager:
             monthly_dates.append(date)
 
         # Handle the last month
-        if len(monthly_dates) > 0:
+        if monthly_dates:
             monthly_dates.sort()
             train_len = int(len(monthly_dates) * (3 / 4))
             train_dates += monthly_dates[:train_len]
