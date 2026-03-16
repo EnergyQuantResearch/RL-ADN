@@ -681,7 +681,7 @@ class GridTensor:
                               flat_start: bool = True,
                               start_value: np.array = None):
 
-        """
+        r"""
         Single time step power flow with numba performance increase.
         This is the implementation of [1], algorithm called SAM (Successive Approximation Method)
 

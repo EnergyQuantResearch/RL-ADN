@@ -1,9 +1,7 @@
 rl_adn.environments package
 ===========================
 
-.. automodule:: rl_adn.environments
-   :members:
-   :show-inheritance:
+The package-level exports mirror the core environment entrypoints documented below.
 
 .. automodule:: rl_adn.environments.battery
    :members:
@@ -16,4 +14,3 @@ rl_adn.environments package
 .. automodule:: rl_adn.environments.env
    :members:
    :show-inheritance:
-

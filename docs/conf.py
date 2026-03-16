@@ -46,7 +46,6 @@ templates_path = ['_templates']
 exclude_patterns = ['_build', 'Thumbs.db', '.DS_Store']
 
 autodoc_default_options = {
-    'members': True,
     'show-inheritance': True,
 }
 autodoc_mock_imports = ['gym', 'pandapower', 'pandapower.topology', 'psutil']

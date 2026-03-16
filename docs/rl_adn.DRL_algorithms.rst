@@ -1,31 +1,15 @@
 rl_adn.DRL_algorithms package
 =============================
 
-.. automodule:: rl_adn.DRL_algorithms
-   :members:
-   :show-inheritance:
+Algorithm modules are documented on dedicated subpages to avoid duplicate
+autodoc entries while preserving the full module tree.
 
-.. automodule:: rl_adn.DRL_algorithms.Agent
-   :members:
-   :show-inheritance:
+.. toctree::
+   :maxdepth: 2
 
-.. automodule:: rl_adn.DRL_algorithms.DDPG
-   :members:
-   :show-inheritance:
-
-.. automodule:: rl_adn.DRL_algorithms.PPO
-   :members:
-   :show-inheritance:
-
-.. automodule:: rl_adn.DRL_algorithms.SAC
-   :members:
-   :show-inheritance:
-
-.. automodule:: rl_adn.DRL_algorithms.TD3
-   :members:
-   :show-inheritance:
-
-.. automodule:: rl_adn.DRL_algorithms.utility
-   :members:
-   :show-inheritance:
-
+   rl_adn.DRL_algorithms.Agent
+   rl_adn.DRL_algorithms.DDPG
+   rl_adn.DRL_algorithms.PPO
+   rl_adn.DRL_algorithms.SAC
+   rl_adn.DRL_algorithms.TD3
+   rl_adn.DRL_algorithms.utility

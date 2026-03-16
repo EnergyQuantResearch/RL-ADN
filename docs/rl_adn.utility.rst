@@ -1,12 +1,9 @@
 rl_adn.utility package
 ======================
 
-.. automodule:: rl_adn.utility
-   :members:
-   :show-inheritance:
+Utility submodules are documented individually to avoid duplicating package-level aliases.
 
 .. automodule:: rl_adn.utility.grid
-   :members:
    :show-inheritance:
 
 .. automodule:: rl_adn.utility.numbarize
