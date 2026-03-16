@@ -1,7 +1,9 @@
 import os
 import time
 import numpy as np
-import pandapower as pp
+import pytest
+
+pp = pytest.importorskip("pandapower")
 
 from rl_adn.utility.grid import GridTensor
 from rl_adn.utility.utils import create_pandapower_net
