@@ -20,7 +20,7 @@ jobs:
 
       - name: Install dependencies
         run: |
-          python -m pip install --upgrade "pip<25" "setuptools<66" "wheel<0.38"
+          python -m pip install --upgrade "pip<24.1" "setuptools<66" "wheel<0.38"
           python -m pip install --no-build-isolation -r requirements-dev.txt
 
       - name: Run lightweight test suite
