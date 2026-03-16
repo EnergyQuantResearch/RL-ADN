@@ -4,6 +4,7 @@ import numpy as np
 import pytest
 
 pp = pytest.importorskip("pandapower")
+pytestmark = pytest.mark.powerflow
 
 from rl_adn.utility.grid import GridTensor
 from rl_adn.utility.utils import create_pandapower_net

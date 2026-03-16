@@ -5,8 +5,8 @@ from copy import deepcopy
 import os
 from torch import nn, Tensor
 from typing import Tuple, Union
-from utility import Config, ReplayBuffer, SumTree, build_mlp, get_episode_return, get_optim_param
-from Agent import AgentBase
+from rl_adn.DRL_algorithms.utility import Config, ReplayBuffer, SumTree, build_mlp, get_episode_return, get_optim_param
+from rl_adn.DRL_algorithms.Agent import AgentBase
 from rl_adn.environments.env import PowerNetEnv, env_config
 import time
 class Actor(nn.Module):
