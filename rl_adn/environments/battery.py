@@ -63,7 +63,10 @@ class Battery():
             energy change and updates the SOC while ensuring it stays within the defined minimum and maximum limits.
             The energy change is also used to calculate the cost associated with battery operation.
         """
-        action_battery = float(np.asarray(action_battery).reshape(-1)[0])
+        action_array = np.asarray(action_battery).reshape(-1)
+        if action_array.size != 1:
+            raise ValueError("Battery.step expects a scalar action or a size-1 array")
+        action_battery = float(action_array[0])
         energy = action_battery * self.max_charge
         updated_soc = max(self.min_soc,min(self.max_soc, (self.current_soc * self.capacity + energy * 5 / 60) / self.capacity))
 
