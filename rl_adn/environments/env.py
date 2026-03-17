@@ -3,29 +3,22 @@ import random
 
 import gym
 import numpy as np
-import pandapower as pp
 import pandas as pd
 from gym import spaces
 
 from rl_adn.data_manager.data_manager import GeneralPowerDataManager
 from rl_adn.environments.battery import Battery, battery_parameters
+from rl_adn.environments.config import make_env_config, env_config
 from rl_adn.utility.grid import GridTensor
 from rl_adn.utility.utils import create_pandapower_net
 
-env_config = {
-    "voltage_limits": [0.95, 1.05],
-    "algorithm": "Laurent",
-    "battery_list": [11, 15, 26, 29, 33],
-    "year": 2020,
-    "month": 1,
-    "day": 1,
-    "train": True,
-    "state_pattern": "default",
-    "network_info": {'vm_pu': 1.0, 's_base': 1000,
-                     'bus_info_file': '../data_sources/network_data/node_34/Nodes_34.csv',
-                     'branch_info_file': '../data_sources/network_data/node_34/Lines_34.csv'},
-    "time_series_data_path": "../data_sources/time_series_data/34_node_time_series.csv"
-}
+
+def _require_pandapower():
+    try:
+        import pandapower as pp
+    except ImportError as exc:
+        raise ImportError("PandaPower support requires the optional dependency 'pandapower'.") from exc
+    return pp
 
 
 class PowerNetEnv(gym.Env):
@@ -82,9 +75,7 @@ class PowerNetEnv(gym.Env):
         # network_info for building the network
         if self.network_info == 'None':
             print('create basic 34 node IEEE network, when initial data is not identified')
-            self.network_info = {'vm_pu': 1.0, 's_base': 1000,
-                                 'bus_info_file': '../data_sources/network_data/node_34/Nodes_34.csv',
-                                 'branch_info_file': '../data_sources/network_data/node_34/Lines_34.csv'}
+            self.network_info = make_env_config()['network_info']
             self.s_base = 1000
             self.node_num = 34
         else:
@@ -334,7 +325,7 @@ class PowerNetEnv(gym.Env):
                     self.net.load.p_mw[bus_index] = (active_power[bus_index] - renewable_active_power[
                         bus_index]) / self.s_base
                     self.net.load.q_mvar[bus_index] = 0
-                pp.runpp(self.net, algorithm='nr')
+                _require_pandapower().runpp(self.net, algorithm='nr')
                 v_real = self.net.res_bus["vm_pu"].values * np.cos(np.deg2rad(self.net.res_bus["va_degree"].values))
                 v_img = self.net.res_bus["vm_pu"].values * np.sin(np.deg2rad(self.net.res_bus["va_degree"].values))
                 v_result = v_real + 1j * v_img
@@ -385,7 +376,7 @@ class PowerNetEnv(gym.Env):
                 for i, node_index in enumerate(self.battery_list):
                     getattr(self, f"battery_{node_index}").step(action[i])
                     self.net.load.p_mw[node_index] += getattr(self, f"battery_{node_index}").energy_change / 1000
-                pp.runpp(self.net, algorithm='nr')
+                _require_pandapower().runpp(self.net, algorithm='nr')
                 vm_pu_after_control = cp.deepcopy(self.net.res_bus.vm_pu).to_numpy(dtype=float)
                 vm_pu_after_control_bat = vm_pu_after_control[self.battery_list]
 

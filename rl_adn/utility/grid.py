@@ -434,41 +434,10 @@ class GridTensor:
                sparse_solver: str = "scipy"):
 
         """
-        Computes the power flow on the grid for the active and reactive power matrices/tensor.
+        Run a power-flow solve for the provided active/reactive power inputs.
 
-        Parameters:
-        -----------
-            active_power: np.ndarray: Real array/tensor type np.float64. The dimension of the tensor should be
-                            of the form (a x b x ... x m), where m is the number of buses minus the slack bus.
-                            e.g., m = nbus - 1. The values of the array are in kilo-Watt [kW].
-            reactive_power: np.ndarray: The array/tensor has the same characteristics than the active_power parameter.
-            flat_start: bool: Flag to indicate if ta flat start should be use. This is currently the default. All
-                            values of voltage starts at (1.0 + j0.0) p.u.
-            start_value: np.ndarray: Array/Tensor with the same dimension os active_power parameter. It indicates the
-                            warm start voltage values for the iterative algorithm. This array is in complex number
-                            of type np.complex128.
-            algorithm: str: Algorithm to be used for the power flow. The options are:
-                            "hp-tensor":  Tensor-sparse power flow. The sparse solver is defined by the "sparse_solver"
-                                        parameter.
-                            "tensor":  Tensor-dense power flow.
-                            "sequential": Power flow for only one instance of consumption. i.e., active_power and
-                                        reactive_power is a 1-D vector.
-                            "hp":  Power flow for only one instance of consumption, but using sparse matrices. The
-                                        sparse solver is defined by the "sparse_solver" parameter.
-                            "sam":  SAM (Successive Approximation Method).
-            sparse_solver: str: Sparse solver algorithm to be used to solve a problem of the type Ax = b. The options
-                            available are:
-                            "scipy":  Sparse solver from scipy.
-                            "pardiso":  Sparse solver from the Intel MKL library. Using this solver, we can factorize
-                                        the matrix A only one time in a separate step. (from the equation Ax=b).
-                                        This means that the iterative solution of the power flow is much faster.
-        Return:
-        -------
-            solution: dict: This is a dictionary with the voltage solutions and different times to
-
-            solution = {"v": Solution of voltage in complex numbers with the shape of the active_power array.
-                        "time_pre_pf": Time in seconds to compute the power flow before the iterative for loop.
-                        "time_pf":  Time in seconds to compute the power flow inside the iterative for loop.
+        The method accepts either batched tensors or a single-step vector and dispatches
+        to the selected solver implementation.
                         "time_algorithm": Total time algorithm. time_algorithm = time_pre_pf + time_pf
                         "iterations": Total number of iterations to converge.
 
@@ -681,7 +650,7 @@ class GridTensor:
                               flat_start: bool = True,
                               start_value: np.array = None):
 
-        """
+        r"""
         Single time step power flow with numba performance increase.
         This is the implementation of [1], algorithm called SAM (Successive Approximation Method)
 

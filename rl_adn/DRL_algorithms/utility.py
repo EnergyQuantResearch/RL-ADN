@@ -530,27 +530,7 @@ class SumTree:
             l_ids = p_ids
 
     def get_leaf_id_and_value(self, v) -> Tuple[int, float]:
-        """
-        Retrieves the leaf node ID and its value based on a given value.
-
-        Args:
-            v (float): The value to search for in the tree.
-
-        Returns:
-            Tuple[int, float]: A tuple containing the ID of the leaf node and its value.
-
-        Description:
-            This method searches the SumTree to find the leaf node whose value corresponds to the given value 'v'.
-            It is used during the sampling process in PER to select experiences based on their priority values.
-            Tree structure and array storage:
-        Tree index:
-              0       -> storing priority sum
-            |  |
-          1     2
-         | |   | |
-        3  4  5  6    -> storing priority for transitions
-        Array type for storing: [0, 1, 2, 3, 4, 5, 6]
-        """
+        """Retrieve the leaf node index and priority value for a cumulative-sum lookup."""
 
         p_id = 0  # the leaf's parent node
 

@@ -6,8 +6,8 @@ from torch import nn, Tensor
 from torch.distributions.normal import Normal
 
 from typing import Tuple, Union
-from utility import Config, ReplayBuffer, SumTree, build_mlp, get_episode_return, get_optim_param
-from Agent import AgentBase
+from rl_adn.DRL_algorithms.utility import Config, ReplayBuffer, SumTree, build_mlp, get_episode_return, get_optim_param
+from rl_adn.DRL_algorithms.Agent import AgentBase
 import time
 
 config_path = os.path.abspath(os.path.join(os.path.dirname(__file__), '../rl_adn', 'environments', 'env_config.py'))
@@ -318,4 +318,3 @@ class AgentPPO(AgentBase):
             advantages[t] = advantage = delta + masks[t] * self.lambda_gae_adv * advantage
             next_value = values[t]
         return advantages
-

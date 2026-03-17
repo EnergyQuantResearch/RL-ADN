@@ -7,8 +7,8 @@ from copy import deepcopy
 import os
 from torch import nn, Tensor
 from typing import Tuple, Union
-from utility import Config, ReplayBuffer, SumTree, build_mlp, get_episode_return, get_optim_param
-from Agent import AgentBase
+from rl_adn.DRL_algorithms.utility import Config, ReplayBuffer, SumTree, build_mlp, get_episode_return, get_optim_param
+from rl_adn.DRL_algorithms.Agent import AgentBase
 
 
 class CriticTwin(nn.Module):
@@ -192,5 +192,3 @@ class AgentTD3(AgentBase):
         undones = 1.0 - dones.type(torch.float32)
         # undones = (1.0 - dones.type(torch.float32)).unsqueeze(1)
         return states, actions, rewards, undones
-
-

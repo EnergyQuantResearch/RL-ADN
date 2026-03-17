@@ -2,12 +2,13 @@ from rl_adn.data_manager.data_manager import GeneralPowerDataManager
 import pandas as pd
 import numpy as np
 import os
+import warnings
 
 
 def test_GeneralPowerDataManager():
     # Generate sample data
     sample_data = {
-        'date_time': pd.date_range(start='2021-01-01', periods=24 * 30, freq='H', tz='UTC'),
+        'date_time': pd.date_range(start='2021-01-01', periods=24 * 30, freq='h', tz='UTC'),
         'active_power_node_1': np.random.rand(24 * 30),
         'active_power_node_2': np.random.rand(24 * 30),
         'reactive_power_node_1': np.random.rand(24 * 30),
@@ -18,7 +19,12 @@ def test_GeneralPowerDataManager():
     df.to_csv(datapath, index=False)
 
     # Test initialization
-    data_manager = GeneralPowerDataManager(datapath)
+    with warnings.catch_warnings(record=True) as caught_warnings:
+        warnings.simplefilter("always")
+        data_manager = GeneralPowerDataManager(datapath)
+
+    future_warnings = [w for w in caught_warnings if issubclass(w.category, FutureWarning)]
+    assert not future_warnings, "GeneralPowerDataManager emitted FutureWarning during initialization"
     assert isinstance(data_manager.df, pd.DataFrame), "DataFrame not initialized"
     assert len(data_manager.active_power_cols) == 2, "Active power columns not detected correctly"
     assert len(data_manager.reactive_power_cols) == 1, "Reactive power columns not detected correctly"

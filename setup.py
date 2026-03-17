@@ -45,7 +45,7 @@ setup(
     description="RL-ADN: A Benchmark Framework for DRL-based Battery Energy Arbitrage in Distribution Networks",
     long_description=LONG_DESCRIPTION,
     long_description_content_type="text/markdown",
-    url="https://github.com/ShengrenHou/RL-ADN",
+    url="https://github.com/EnergyQuantResearch/RL-ADN",
     license="MIT",
     keywords="DRL energy arbitrage",
 )

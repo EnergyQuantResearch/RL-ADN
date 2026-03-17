@@ -151,8 +151,8 @@ class GeneralPowerDataManager:
         Replace NaN values in the data with interpolated values or the average of the surrounding values.
         """
         self.df.interpolate(inplace=True)
-        self.df.fillna(method='bfill', inplace=True)
-        self.df.fillna(method='ffill', inplace=True)
+        self.df.bfill(inplace=True)
+        self.df.ffill(inplace=True)
 
     def _check_for_nan(self) -> None:
         """
@@ -262,5 +262,4 @@ class GeneralPowerDataManager:
 
         self.train_dates = train_dates
         self.test_dates = test_dates
-
 

@@ -7,8 +7,8 @@ from copy import deepcopy
 import os
 from torch import nn, Tensor
 from typing import Tuple, Union
-from utility import Config, ReplayBuffer, SumTree, build_mlp, get_episode_return, get_optim_param
-from Agent import AgentBase
+from rl_adn.DRL_algorithms.utility import Config, ReplayBuffer, SumTree, build_mlp, get_episode_return, get_optim_param
+from rl_adn.DRL_algorithms.Agent import AgentBase
 
 
 ## define net
@@ -334,4 +334,3 @@ class AgentSAC(AgentBase):
 
         buffer.td_error_update_for_per(is_indices.detach(), td_errors.detach())
         return obj_critic, states
-

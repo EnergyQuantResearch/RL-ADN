@@ -2,10 +2,8 @@
 import numpy as np
 from time import perf_counter
 
-import pandapower.topology
 import pandas as pd
 import os
-import pandapower as pp
 import matplotlib.pyplot as plt
 import networkx as nx
 import os
@@ -14,6 +12,15 @@ from ctypes import CDLL, POINTER, c_int, byref, c_bool, c_double
 from numpy import ctypeslib
 import sys
 from time import perf_counter
+
+
+def _require_pandapower():
+    try:
+        import pandapower as pp
+        import pandapower.topology as pandapower_topology
+    except ImportError as exc:
+        raise ImportError("pandapower helpers require the optional dependency 'pandapower'.") from exc
+    return pp, pandapower_topology
 
 def load_library():
     """
@@ -261,6 +268,7 @@ def create_pandapower_net(network_info: dict):
     s_base=network_info['s_base']
     branch_info_file=network_info['branch_info_file']
     bus_info_file=network_info['bus_info_file']
+    pp, _ = _require_pandapower()
 
     branch_info = pd.read_csv(branch_info_file, encoding='utf-8')
     bus_info = pd.read_csv(bus_info_file, encoding='utf-8')
@@ -303,8 +311,9 @@ def plot_pandapower_net(net):
         This function creates a plot of the given pandapower network, showing buses, loads, PV generations,
         and lines. It uses networkx for graph representation and matplotlib for plotting.
     """
+    _, pandapower_topology = _require_pandapower()
     # Create a graph from the pandapower network
-    G = pandapower.topology.create_nxgraph(net, respect_switches = False)
+    G = pandapower_topology.create_nxgraph(net, respect_switches = False)
 
     # Set node positions based on bus coordinates
     pos = {bus: (net.bus_geodata.at[bus, 'x'], net.bus_geodata.at[bus, 'y']) for bus in G.nodes}
@@ -349,6 +358,7 @@ def net_test(net):
         This function runs power flow calculations on the provided pandapower network using different algorithms
         (Newton-Raphson and BFSW). It compares the calculated voltages with a predefined solution to verify the correctness.
     """
+    pp, _ = _require_pandapower()
 
     v_solution = [0.98965162 + 0.00180549j, 0.98060256 + 0.00337785j, 0.96828145 + 0.00704551j,
                   0.95767051 + 0.01019764j, 0.94765203 + 0.01316654j, 0.94090964 + 0.01600068j,
@@ -395,6 +405,7 @@ def test_create_pandapower_net(network_info=None):
     34 node test network. The function prints the configuration and a
     summary of the resulting pandapower ``net`` object.
     """
+    _require_pandapower()
     if network_info is None:
         data_dir = os.path.abspath(
             os.path.join(os.path.dirname(__file__), '..', 'data_sources',
@@ -431,4 +442,3 @@ def test_plot_pandapower_net(net):
 if __name__ == "__main__":
     test_net = test_create_pandapower_net()
     test_plot_pandapower_net(test_net)
-
