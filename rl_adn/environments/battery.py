@@ -10,6 +10,8 @@ battery_parameters={
 'min_soc':0.2,
 'initial_soc':0.4}
 
+DEFAULT_TIME_INTERVAL_MINUTES = 15.0
+
 class Battery():
     """
     A simple battery model for energy storage and management.
@@ -50,6 +52,9 @@ class Battery():
         self.max_charge = parameters['max_charge']  # max charge ability
         self.max_discharge = parameters['max_discharge']  # max discharge ability
         self.efficiency = parameters['efficiency']  # charge and discharge efficiency
+        self.time_interval_minutes = float(parameters.get('time_interval_minutes', DEFAULT_TIME_INTERVAL_MINUTES))
+        if self.time_interval_minutes <= 0:
+            raise ValueError("time_interval_minutes must be positive")
 
     def step(self, action_battery):
         """
@@ -67,10 +72,18 @@ class Battery():
         if action_array.size != 1:
             raise ValueError("Battery.step expects a scalar action or a size-1 array")
         action_battery = float(action_array[0])
-        energy = action_battery * self.max_charge
-        updated_soc = max(self.min_soc,min(self.max_soc, (self.current_soc * self.capacity + energy * 5 / 60) / self.capacity))
+        rated_power = self.max_discharge if action_battery >= 0 else self.max_charge
+        power_command = action_battery * rated_power
+        interval_hours = self.time_interval_minutes / 60.0
+        updated_soc = max(
+            self.min_soc,
+            min(
+                self.max_soc,
+                (self.current_soc * self.capacity + power_command * interval_hours) / self.capacity,
+            ),
+        )
 
-        self.energy_change = (updated_soc - self.current_soc) * self.capacity * 12  # if charge, positive, if discharge, negative
+        self.energy_change = (updated_soc - self.current_soc) * self.capacity / interval_hours  # if charge, positive, if discharge, negative
         self.current_soc = updated_soc  # update capacity to current codition
 
     def _get_cost(self, energy):  # calculate the cost depends on the energy change
@@ -109,4 +122,4 @@ class Battery():
         Description:
             This method is used to reset the battery's state of charge to its initial value, typically used at the start of a new simulation or operational cycle.
         """
-        self.current_soc = 0.4
+        self.current_soc = self.initial_soc

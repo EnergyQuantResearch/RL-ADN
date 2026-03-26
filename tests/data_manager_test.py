@@ -5,7 +5,7 @@ import os
 import warnings
 
 
-def test_GeneralPowerDataManager():
+def test_GeneralPowerDataManager(tmp_path):
     # Generate sample data
     sample_data = {
         'date_time': pd.date_range(start='2021-01-01', periods=24 * 30, freq='h', tz='UTC'),
@@ -15,7 +15,7 @@ def test_GeneralPowerDataManager():
         'price_node_1': np.random.rand(24 * 30)
     }
     df = pd.DataFrame(sample_data)
-    datapath = 'sample_data.csv'
+    datapath = tmp_path / 'sample_data.csv'
     df.to_csv(datapath, index=False)
 
     # Test initialization

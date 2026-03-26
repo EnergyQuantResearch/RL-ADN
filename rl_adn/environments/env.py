@@ -106,13 +106,15 @@ class PowerNetEnv(gym.Env):
         self.edge_index = None
         self._apply_topology(self._determine_scenario_id(initial=True))
 
+        self.data_manager = GeneralPowerDataManager(config['time_series_data_path'])
         if not self.battery_list:
             raise ValueError("No batteries specified!")
+        battery_config = dict(battery_parameters)
+        battery_config["time_interval_minutes"] = self.data_manager.time_interval
         for node_index in self.battery_list:
-            battery = Battery(battery_parameters)
+            battery = Battery(battery_config)
             setattr(self, f"battery_{node_index}", battery)
         self.action_space = spaces.Box(low=-1, high=1, shape=(len(self.battery_list), 1), dtype=np.float32)
-        self.data_manager = GeneralPowerDataManager(config['time_series_data_path'])
         self.active_power_indices = [self.data_manager.df.columns.get_loc(col) for col in self.data_manager.active_power_cols]
         self.renewable_active_power_indices = [
             self.data_manager.df.columns.get_loc(col) for col in self.data_manager.renewable_active_power_cols
