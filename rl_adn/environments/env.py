@@ -9,8 +9,16 @@ from gym import spaces
 from rl_adn.data_manager.data_manager import GeneralPowerDataManager
 from rl_adn.environments.battery import Battery, battery_parameters
 from rl_adn.environments.config import make_env_config, env_config
+from rl_adn.environments.topology_scenarios import get_topology_scenario
 from rl_adn.utility.grid import GridTensor
 from rl_adn.utility.utils import create_pandapower_net
+from rl_adn.utility.topology import (
+    apply_topology_scenario,
+    build_adjacency_matrix,
+    build_edge_index,
+    get_active_edges,
+    validate_radial_topology,
+)
 
 
 def _require_pandapower():
@@ -71,31 +79,32 @@ class PowerNetEnv(gym.Env):
         self.day = config['day']
         self.train = config['train']
         self.state_pattern = config['state_pattern']
-        self.network_info = config['network_info']
+        self.feeder_id = config.get('feeder_id', f"{config['network_info']['bus_info_file']}-feeder")
+        self.topology_mode = config.get('topology_mode', 'fixed')
+        self.topology_scenario = config.get('topology_scenario')
+        self.topology_pool = config.get('topology_pool')
+        self.return_graph = bool(config.get('return_graph', False))
+
+        self.network_info = cp.deepcopy(config['network_info'])
         # network_info for building the network
         if self.network_info == 'None':
             print('create basic 34 node IEEE network, when initial data is not identified')
             self.network_info = make_env_config()['network_info']
             self.s_base = 1000
-            self.node_num = 34
         else:
             self.s_base = self.network_info['s_base']
-            network_bus_info = pd.read_csv(self.network_info['bus_info_file'])
-            self.node_num = len((network_bus_info.NODES))
-        # Conditional initialization of the distribution network based on the chosen algorithm
-        if self.algorithm == "Laurent":
-            # Logic for initializing with GridTensor
-            self.net = GridTensor(self.network_info['bus_info_file'],
-                                  self.network_info['branch_info_file'])
-            self.net.Q_file = np.zeros(33)
-            self.dense_Ybus = self.net._make_y_bus().toarray()
 
+        self._baseline_bus_info = pd.read_csv(self.network_info['bus_info_file'])
+        self._baseline_line_info = pd.read_csv(self.network_info['branch_info_file'])
+        self.node_num = len((self._baseline_bus_info.NODES))
 
-        elif self.algorithm == "PandaPower":
-            # Logic for initializing with PandaPower
-            self.net = create_pandapower_net(self.network_info)
-        else:
-            raise ValueError("Invalid algorithm choice. Please choose 'Laurent' or 'PandaPower'.")
+        self.current_scenario = None
+        self.active_line_info = None
+        self.active_bus_info = None
+        self.active_edges = None
+        self.adjacency_matrix = None
+        self.edge_index = None
+        self._apply_topology(self._determine_scenario_id(initial=True))
 
         if not self.battery_list:
             raise ValueError("No batteries specified!")
@@ -104,6 +113,11 @@ class PowerNetEnv(gym.Env):
             setattr(self, f"battery_{node_index}", battery)
         self.action_space = spaces.Box(low=-1, high=1, shape=(len(self.battery_list), 1), dtype=np.float32)
         self.data_manager = GeneralPowerDataManager(config['time_series_data_path'])
+        self.active_power_indices = [self.data_manager.df.columns.get_loc(col) for col in self.data_manager.active_power_cols]
+        self.renewable_active_power_indices = [
+            self.data_manager.df.columns.get_loc(col) for col in self.data_manager.renewable_active_power_cols
+        ]
+        self.price_index = self.data_manager.df.columns.get_loc(self.data_manager.price_col[0])
         self.episode_length: int = 24 * 60 / self.data_manager.time_interval
 
         if self.state_pattern == 'default':
@@ -118,17 +132,15 @@ class PowerNetEnv(gym.Env):
 
         self.state_space = spaces.Box(low=-2, high=2, shape=(self.state_length,), dtype=np.float32)
 
-    def reset(self) -> np.ndarray:
-        """
-        Reset the environment to its initial state and return the initial state.
-
-        :return: The normalized initial state of the environment.
-        :rtype: np.ndarray
-        """
+    def reset(self, return_info: bool = False):
+        self._apply_topology(self._determine_scenario_id())
         self._reset_date()
         self._reset_time()
         self._reset_batteries()
-        return self._build_state()
+        state = self._build_state()
+        if return_info:
+            return state, self._build_info(state)
+        return state
 
     def _reset_date(self) -> None:
         """
@@ -169,7 +181,7 @@ class PowerNetEnv(gym.Env):
         obs = self._get_obs()
         if self.state_pattern == 'default':
             active_power = np.array(list(obs['node_data']['active_power'].values()))
-            price = obs['price']
+            price = float(obs['price'])
             soc_list = np.array(
                 [obs['battery_data']['soc'][f'battery_{node_index}'] for node_index in self.battery_list])
             vm_pu_battery = np.array(
@@ -278,6 +290,66 @@ class PowerNetEnv(gym.Env):
         denormalized_state = normalized_state
         return denormalized_state
 
+    def _determine_scenario_id(self, initial: bool = False) -> str:
+        if self.topology_mode == 'fixed':
+            return self.topology_scenario or 'TP1'
+        if self.topology_mode == 'scenario_pool':
+            if not self.topology_pool:
+                raise ValueError("topology_pool must be provided when topology_mode='scenario_pool'")
+            return random.choice(self.topology_pool)
+        raise ValueError("Invalid topology_mode. Expected 'fixed' or 'scenario_pool'.")
+
+    def _apply_topology(self, scenario_id: str) -> None:
+        scenario = get_topology_scenario(self.node_num, scenario_id)
+        active_line_info = apply_topology_scenario(self._baseline_line_info, scenario)
+        validation = validate_radial_topology(self._baseline_bus_info, active_line_info)
+        if not (validation["is_connected"] and validation["is_radial"] and validation["slack_reaches_all"]):
+            raise ValueError(f"Topology scenario {scenario_id} is not a valid radial topology")
+
+        self.current_scenario = scenario
+        self.active_line_info = active_line_info
+        self.active_bus_info = self._baseline_bus_info.copy(deep=True)
+        self.active_edges = get_active_edges(active_line_info)
+        self.adjacency_matrix = build_adjacency_matrix(self.node_num, active_line_info)
+        self.edge_index = build_edge_index(active_line_info)
+
+        if self.algorithm == "Laurent":
+            self.net = GridTensor(
+                node_file_path="",
+                lines_file_path="",
+                from_file=False,
+                nodes_frame=self.active_bus_info.copy(deep=True),
+                lines_frame=self.active_line_info.copy(deep=True),
+                s_base=self.s_base,
+            )
+            self.net.Q_file = np.zeros(self.node_num - 1)
+            self.dense_Ybus = self.net._make_y_bus().toarray()
+        elif self.algorithm == "PandaPower":
+            self.net = create_pandapower_net(
+                self.network_info,
+                branch_info=self.active_line_info.copy(deep=True),
+                bus_info=self.active_bus_info.copy(deep=True),
+            )
+        else:
+            raise ValueError("Invalid algorithm choice. Please choose 'Laurent' or 'PandaPower'.")
+
+    def _extract_slot_features(self, one_slot_data: np.ndarray):
+        active_power = cp.copy(one_slot_data[self.active_power_indices]).astype(float)
+        renewable_active_power = np.zeros_like(active_power)
+        if self.renewable_active_power_indices:
+            renewable_active_power = one_slot_data[self.renewable_active_power_indices].astype(float)
+        price = float(one_slot_data[self.price_index])
+
+        if active_power.shape[0] != self.node_num:
+            raise ValueError(
+                f"Time-series active power dimension {active_power.shape[0]} does not match feeder node count {self.node_num}"
+            )
+        if renewable_active_power.shape[0] != self.node_num:
+            raise ValueError(
+                f"Time-series renewable power dimension {renewable_active_power.shape[0]} does not match feeder node count {self.node_num}"
+            )
+        return active_power, renewable_active_power, price
+
     def _get_obs(self):
         """
         Executes the power flow based on the chosen algorithm and returns the observations.
@@ -287,21 +359,18 @@ class PowerNetEnv(gym.Env):
         """
         if self.state_pattern == 'default':
             one_slot_data = self.data_manager.select_timeslot_data(self.year, self.month, self.day, self.current_time)
+            active_power, renewable_active_power, price = self._extract_slot_features(one_slot_data)
 
             if self.algorithm == "Laurent":
-                # This is where bugs comes from, if we don't use copy, this slice is actually creating a view of originally data.
-                active_power = cp.copy(one_slot_data[0:34])
-                renewable_active_power = one_slot_data[34:68]
-                self.active_power = (active_power - renewable_active_power)[1:34]
-                reactive_power = np.zeros(33)
-                price = one_slot_data[-1]
+                self.active_power = (active_power - renewable_active_power)[1:self.node_num]
+                reactive_power = np.zeros(self.node_num - 1)
                 self.solution = self.net.run_pf(active_power=self.active_power)
 
                 obs = {'node_data': {'voltage': {}, 'active_power': {}, 'reactive_power': {},
                                      'renewable_active_power': {}},
                        'battery_data': {'soc': {}}, 'price': {}, 'aux': {}}
 
-                for node_index in range(len(self.net.bus_info.NODES)):  # NODES[1-34], node_index[0-33]
+                for node_index in range(len(self.net.bus_info.NODES)):
                     if node_index == 0:
                         obs['node_data']['voltage'][f'node_{node_index}'] = 1.0
                         obs['node_data']['active_power'][f'node_{node_index}'] = 0.0
@@ -316,11 +385,8 @@ class PowerNetEnv(gym.Env):
                     obs['battery_data']['soc'][f'battery_{node_index}'] = getattr(self, f'battery_{node_index}').SOC()
                 obs['price'] = price
             else:
-                active_power = one_slot_data[0:34]
                 active_power[0] = 0
-                renewable_active_power = one_slot_data[34:68]
                 renewable_active_power[0] = 0
-                price = one_slot_data[-1]
                 for bus_index in self.net.load.bus.index:
                     self.net.load.p_mw[bus_index] = (active_power[bus_index] - renewable_active_power[
                         bus_index]) / self.s_base
@@ -398,7 +464,7 @@ class PowerNetEnv(gym.Env):
         """
 
         current_normalized_obs = self.normalized_state
-        info = current_normalized_obs
+        info = self._build_info(current_normalized_obs)
 
         # Apply battery actions and get updated observations
         saved_energy, vm_pu_after_control_bat = self._apply_battery_actions(action)
@@ -413,6 +479,33 @@ class PowerNetEnv(gym.Env):
         else:
             next_normalized_obs = self._build_state()
         return next_normalized_obs, float(reward), finish, info
+
+    def get_topology_metadata(self):
+        return {
+            "feeder_id": self.feeder_id,
+            "scenario_id": self.current_scenario.scenario_id,
+            "node_count": self.node_num,
+            "edge_count": len(self.active_edges),
+            "active_edges": list(self.active_edges),
+        }
+
+    def get_graph_data(self):
+        return {
+            "adjacency": self.adjacency_matrix.copy(),
+            "edge_index": self.edge_index.copy(),
+            "node_ids": np.arange(1, self.node_num + 1, dtype=np.int64),
+            "active_line_data": self.active_line_info[["FROM", "TO", "R", "X", "B", "STATUS", "TAP"]].to_dict("records"),
+        }
+
+    def _build_info(self, current_normalized_obs=None):
+        info = {
+            "topology_scenario": self.current_scenario.scenario_id,
+            "feeder_id": self.feeder_id,
+            "active_edges_count": len(self.active_edges),
+        }
+        if current_normalized_obs is not None:
+            info["current_normalized_obs"] = current_normalized_obs
+        return info
 
     def _calculate_reward(self, current_normalized_obs: np.ndarray, vm_pu_after_control_bat: np.ndarray,
                           saved_power: float) -> float:

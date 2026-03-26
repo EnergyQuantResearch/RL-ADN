@@ -1,6 +1,7 @@
 from pathlib import Path
 from typing import Dict, List, Optional
 
+from rl_adn.environments.topology_scenarios import get_topology_scenario
 
 PACKAGE_ROOT = Path(__file__).resolve().parents[1]
 DATA_ROOT = PACKAGE_ROOT / "data_sources"
@@ -8,7 +9,12 @@ NETWORK_ROOT = DATA_ROOT / "network_data"
 TIME_SERIES_ROOT = DATA_ROOT / "time_series_data"
 
 DEFAULT_NODE = 34
-DEFAULT_BATTERY_LIST = [11, 15, 26, 29, 33]
+DEFAULT_BATTERY_LISTS = {
+    # Paper battery placements are reported with 1-based node labels.
+    # RL-ADN stores controllable battery nodes as zero-based bus indices.
+    34: [11, 15, 26, 29, 33],  # paper nodes {12, 16, 27, 30, 34}
+    69: [13, 15, 17, 19, 21, 23, 25, 26, 64],  # paper nodes {14, 16, 18, 20, 22, 24, 26, 27, 65}
+}
 
 
 def _resolve_network_info(node: int, vm_pu: float, s_base: float) -> Dict[str, object]:
@@ -55,11 +61,31 @@ def make_env_config(
     vm_pu: float = 1.0,
     s_base: float = 1000,
     time_series_data_path: Optional[str] = None,
+    topology_mode: str = "fixed",
+    topology_scenario: Optional[str] = None,
+    topology_pool: Optional[List[str]] = None,
+    return_graph: bool = False,
 ) -> Dict[str, object]:
+    if topology_mode not in {"fixed", "scenario_pool"}:
+        raise ValueError("topology_mode must be either 'fixed' or 'scenario_pool'")
+
+    if topology_pool is not None and len(topology_pool) == 0:
+        raise ValueError("topology_pool must not be empty when provided")
+
+    if topology_scenario is not None:
+        get_topology_scenario(node, topology_scenario)
+
+    if topology_pool is not None:
+        for scenario_id in topology_pool:
+            get_topology_scenario(node, scenario_id)
+
     if battery_list is None:
-        if node != DEFAULT_NODE:
-            raise ValueError("battery_list must be provided for node counts other than 34")
-        battery_list = list(DEFAULT_BATTERY_LIST)
+        default_battery_list = DEFAULT_BATTERY_LISTS.get(node)
+        if default_battery_list is None:
+            raise ValueError(
+                f"battery_list must be provided for node counts without a curated default (received node={node})"
+            )
+        battery_list = list(default_battery_list)
 
     return {
         "voltage_limits": [0.95, 1.05],
@@ -72,6 +98,11 @@ def make_env_config(
         "state_pattern": state_pattern,
         "network_info": _resolve_network_info(node=node, vm_pu=vm_pu, s_base=s_base),
         "time_series_data_path": _resolve_time_series_data_path(node=node, override=time_series_data_path),
+        "feeder_id": f"{node}-bus",
+        "topology_mode": topology_mode,
+        "topology_scenario": topology_scenario,
+        "topology_pool": list(topology_pool) if topology_pool is not None else None,
+        "return_graph": return_graph,
     }
 
 
