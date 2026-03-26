@@ -48,6 +48,7 @@ dev = [
   "pytest>=8,<9",
   "ruff>=0.11,<1",
   "sphinx>=8,<9",
+  "sphinx-rtd-theme>=3,<4",
 ]
 
 [project.urls]
