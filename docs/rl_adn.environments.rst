@@ -7,7 +7,19 @@ The package-level exports mirror the core environment entrypoints documented bel
    :members:
    :show-inheritance:
 
-.. automodule:: rl_adn.environments.config
+.. automodule:: rl_adn.config
+   :members:
+   :show-inheritance:
+
+.. automodule:: rl_adn.environments.observation
+   :members:
+   :show-inheritance:
+
+.. automodule:: rl_adn.environments.reward
+   :members:
+   :show-inheritance:
+
+.. automodule:: rl_adn.environments.solvers
    :members:
    :show-inheritance:
 

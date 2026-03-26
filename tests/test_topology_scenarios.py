@@ -1,24 +1,22 @@
 from pathlib import Path
-import random
 
 import numpy as np
 import pandas as pd
 import pytest
 
-from rl_adn.environments.config import make_env_config
+from rl_adn.config import make_env_config
 from rl_adn.environments.topology_scenarios import (
     get_topology_scenario,
     list_topology_scenario_ids,
 )
-from rl_adn.utility.grid import GridTensor
-from rl_adn.utility.topology import (
+from rl_adn.network.grid import GridTensor
+from rl_adn.network.topology import (
     apply_topology_scenario,
     build_adjacency_matrix,
     build_edge_index,
     get_active_edges,
     validate_radial_topology,
 )
-
 
 ROOT = Path(__file__).resolve().parents[1]
 NETWORK_ROOT = ROOT / "rl_adn" / "data_sources" / "network_data"
@@ -80,20 +78,19 @@ def test_each_topology_scenario_supports_laurent_initialization(node, scenario_i
 def test_make_env_config_preserves_old_behavior_when_topology_fields_omitted():
     config = make_env_config()
 
-    assert config["algorithm"] == "Laurent"
-    assert "topology_mode" in config
-    assert config["topology_mode"] == "fixed"
-    assert config["topology_scenario"] is None
-    assert config["topology_pool"] is None
-    assert config["return_graph"] is False
+    assert config.algorithm == "Laurent"
+    assert config.topology.mode == "fixed"
+    assert config.topology.scenario_id == "TP1"
+    assert config.topology.scenario_pool == ()
+    assert config.topology.return_graph is False
 
 
 def test_make_env_config_accepts_fixed_topology_scenario():
     config = make_env_config(node=34, topology_scenario="TP3")
 
-    assert config["feeder_id"] == "34-bus"
-    assert config["topology_mode"] == "fixed"
-    assert config["topology_scenario"] == "TP3"
+    assert config.feeder_id == "34-bus"
+    assert config.topology.mode == "fixed"
+    assert config.topology.scenario_id == "TP3"
 
 
 def test_make_env_config_provides_curated_defaults_for_supported_feeders():
@@ -104,8 +101,8 @@ def test_make_env_config_provides_curated_defaults_for_supported_feeders():
         time_series_data_path="synthetic.csv",
     )
 
-    assert config_34["battery_list"] == [11, 15, 26, 29, 33]
-    assert config_69["battery_list"] == [13, 15, 17, 19, 21, 23, 25, 26, 64]
+    assert config_34.battery_nodes == (11, 15, 26, 29, 33)
+    assert config_69.battery_nodes == (13, 15, 17, 19, 21, 23, 25, 26, 64)
 
 
 def test_make_env_config_rejects_empty_scenario_pool():
@@ -114,13 +111,13 @@ def test_make_env_config_rejects_empty_scenario_pool():
 
 
 def test_fixed_topology_reset_is_reproducible_and_exposes_metadata():
-    pytest.importorskip("gym")
-    from rl_adn.environments.env import PowerNetEnv
+    pytest.importorskip("gymnasium")
+    from rl_adn import PowerNetEnv
 
     env = PowerNetEnv(make_env_config(node=34, topology_scenario="TP4", return_graph=True))
 
-    state_a, info_a = env.reset(return_info=True)
-    state_b, info_b = env.reset(return_info=True)
+    state_a, info_a = env.reset(seed=2026)
+    state_b, info_b = env.reset(seed=2026)
 
     assert state_a.shape == state_b.shape
     assert info_a["topology_scenario"] == "TP4"
@@ -130,23 +127,21 @@ def test_fixed_topology_reset_is_reproducible_and_exposes_metadata():
 
 
 def test_scenario_pool_sampling_is_deterministic_under_fixed_seed():
-    pytest.importorskip("gym")
-    from rl_adn.environments.env import PowerNetEnv
+    pytest.importorskip("gymnasium")
+    from rl_adn import PowerNetEnv
 
-    random.seed(2026)
     env_a = PowerNetEnv(make_env_config(node=34, topology_mode="scenario_pool", topology_pool=["TP2", "TP3", "TP4"]))
-    seq_a = [env_a.reset(return_info=True)[1]["topology_scenario"] for _ in range(3)]
+    seq_a = [env_a.reset(seed=2026 + index)[1]["topology_scenario"] for index in range(3)]
 
-    random.seed(2026)
     env_b = PowerNetEnv(make_env_config(node=34, topology_mode="scenario_pool", topology_pool=["TP2", "TP3", "TP4"]))
-    seq_b = [env_b.reset(return_info=True)[1]["topology_scenario"] for _ in range(3)]
+    seq_b = [env_b.reset(seed=2026 + index)[1]["topology_scenario"] for index in range(3)]
 
     assert seq_a == seq_b
 
 
 def test_graph_exports_match_active_topology():
-    pytest.importorskip("gym")
-    from rl_adn.environments.env import PowerNetEnv
+    pytest.importorskip("gymnasium")
+    from rl_adn import PowerNetEnv
 
     env = PowerNetEnv(make_env_config(node=34, topology_scenario="TP2", return_graph=True))
     env.reset()
@@ -167,8 +162,8 @@ def test_graph_exports_match_active_topology():
 
 
 def test_69_bus_env_supports_custom_timeseries_with_fixed_topology(tmp_path: Path):
-    pytest.importorskip("gym")
-    from rl_adn.environments.env import PowerNetEnv
+    pytest.importorskip("gymnasium")
+    from rl_adn import PowerNetEnv
 
     synthetic_path = tmp_path / "69_node_time_series.csv"
     _write_synthetic_timeseries(synthetic_path, node_count=69)
@@ -181,7 +176,7 @@ def test_69_bus_env_supports_custom_timeseries_with_fixed_topology(tmp_path: Pat
         )
     )
 
-    state, info = env.reset(return_info=True)
+    state, info = env.reset(seed=2026)
     assert state is not None
     assert info["topology_scenario"] == "TP2"
     assert info["feeder_id"] == "69-bus"

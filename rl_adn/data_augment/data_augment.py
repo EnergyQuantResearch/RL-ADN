@@ -1,13 +1,16 @@
-import pandas as pd
-import numpy as np
-from sklearn.mixture import GaussianMixture
-from scipy.stats import norm
-from scipy.optimize import brentq
-from copulas.multivariate import GaussianMultivariate
 import re
 from datetime import datetime, timedelta
-from rl_adn.data_manager.data_manager import  GeneralPowerDataManager
+
+import numpy as np
+import pandas as pd
+from copulas.multivariate import GaussianMultivariate
 from multicopula import EllipticalCopula
+from scipy.optimize import brentq
+from scipy.stats import norm
+from sklearn.mixture import GaussianMixture
+
+from rl_adn.data import GeneralPowerDataManager
+
 
 class ActivePowerDataManager(GeneralPowerDataManager):
     """
@@ -22,7 +25,7 @@ class ActivePowerDataManager(GeneralPowerDataManager):
         if not datapath:
             raise ValueError("Please input the correct datapath")
 
-        self.df = pd.read_csv(datapath, index_col='date_time')
+        self.df = pd.read_csv(datapath, index_col="date_time")
         self.df.index = pd.to_datetime(self.df.index)
 
         # Assuming the data interval is consistent throughout the dataset
@@ -33,28 +36,27 @@ class ActivePowerDataManager(GeneralPowerDataManager):
         """
         Retrieve and preprocess active power data from the dataset.
         """
-        self.df.interpolate(method='linear', inplace=True)
-        self.df['day'] = self.df.index.date
-        self.df['time'] = self.df.index.time
+        self.df.interpolate(method="linear", inplace=True)
+        self.df["day"] = self.df.index.date
+        self.df["time"] = self.df.index.time
 
-        count_per_day = self.df.groupby('day').size()
+        count_per_day = self.df.groupby("day").size()
         expected_time_steps = 24 * 60 / self.time_interval
         days_with_extra_steps = count_per_day[count_per_day > expected_time_steps]
 
         if not days_with_extra_steps.empty:
-            self.df = self.df[~self.df['day'].isin(days_with_extra_steps.index)]
+            self.df = self.df[~self.df["day"].isin(days_with_extra_steps.index)]
 
-        active_power_columns = [col for col in self.df.columns if re.fullmatch(r'active_power(_\w+)?', col)]
+        active_power_columns = [col for col in self.df.columns if re.fullmatch(r"active_power(_\w+)?", col)]
         active_power_df = self.df[active_power_columns].copy()
-        active_power_df['day'] = self.df['day']
-        active_power_df['time'] = self.df['time']
+        active_power_df["day"] = self.df["day"]
+        active_power_df["time"] = self.df["time"]
 
-        reshaped_active_power_df = active_power_df.set_index(['day', 'time']).stack().reset_index().rename(
-            columns={'level_2': 'node', 0: 'value'})
+        reshaped_active_power_df = active_power_df.set_index(["day", "time"]).stack().reset_index().rename(columns={"level_2": "node", 0: "value"})
 
-        grouped_active_power_df = reshaped_active_power_df.groupby('time')['value'].apply(list).reset_index()
+        grouped_active_power_df = reshaped_active_power_df.groupby("time")["value"].apply(list).reset_index()
 
-        reshaped_df = pd.DataFrame(grouped_active_power_df['value'].tolist(), index=grouped_active_power_df['time'])
+        reshaped_df = pd.DataFrame(grouped_active_power_df["value"].tolist(), index=grouped_active_power_df["time"])
 
         active_power_array = reshaped_df.to_numpy().T
         active_power_array = active_power_array[~np.isnan(active_power_array).any(axis=1)]
@@ -63,12 +65,12 @@ class ActivePowerDataManager(GeneralPowerDataManager):
 
 
 class TimeSeriesDataAugmentor:
-    def __init__(self, data_manager, augmentation_model_name='GMC'):
+    def __init__(self, data, augmentation_model_name="GMC"):
         """
         Initialize the data augmentor with a data manager instance and the selected augmentation model.
         Additional parameters can be set here if required.
         """
-        self.data_manager = data_manager
+        self.data = data
         self.augmentation_model_name = augmentation_model_name
         self.augmentation_model = None
 
@@ -81,51 +83,46 @@ class TimeSeriesDataAugmentor:
         GMM: Data augmentaiton using Gaussian Mixture models
         TC: Data augmentaiton using T Copulas
         """
-        if self.augmentation_model_name == 'GMC':
+        if self.augmentation_model_name == "GMC":
             # Extract data from the data manager
-            active_power_array = self.data_manager.get_active_power_data()
+            active_power_array = self.data.get_active_power_data()
 
             # Determine the best number of components for each GMM model, for one day now it is 96 time steps
-            self.n_models = int(24.0 * 60.0 / self.data_manager.time_interval)
+            self.n_models = int(24.0 * 60.0 / self.data.time_interval)
 
-            # print(f'data manager time interval {self.data_manager.time_interval}')
-            best_components = [self._bic_value(active_power_array[:, i].reshape(-1, 1), 20) for i in
-                               range(self.n_models)]
+            # print(f'data manager time interval {self.data.time_interval}')
+            best_components = [self._bic_value(active_power_array[:, i].reshape(-1, 1), 20) for i in range(self.n_models)]
 
             # Fit the GMM models
-            self.gmm_models = [GaussianMixture(n_components=bc).fit(active_power_array[:, i].reshape(-1, 1))
-                               for i, bc in enumerate(best_components)]
+            self.gmm_models = [GaussianMixture(n_components=bc).fit(active_power_array[:, i].reshape(-1, 1)) for i, bc in enumerate(best_components)]
 
             # Transform the data to standard format for copula fitting
             std_input_data = np.empty((active_power_array.shape[0], self.n_models))
             for i in range(self.n_models):
-                std_input_data[:, i] = np.array(
-                    [self._gmm_cdf(self.gmm_models[i], x) for x in active_power_array[:, i]]).reshape(1, -1)
+                std_input_data[:, i] = np.array([self._gmm_cdf(self.gmm_models[i], x) for x in active_power_array[:, i]]).reshape(1, -1)
             self.copula = GaussianMultivariate()
             self.copula.fit(std_input_data)
 
             # Assign the copula as the augmentation model
             self.augmentation_model = self.copula
 
-        if self.augmentation_model_name == 'GMM':
-            active_power_array = self.data_manager.get_active_power_data()
+        if self.augmentation_model_name == "GMM":
+            active_power_array = self.data.get_active_power_data()
 
             # Determine the best number of components for each GMM model, for one day now it is 96 time steps
-            self.n_models = int(24.0 * 60.0 / self.data_manager.time_interval)
+            self.n_models = int(24.0 * 60.0 / self.data.time_interval)
 
-            # print(f'data manager time interval {self.data_manager.time_interval}')
-            best_components = [self._bic_value(active_power_array[:, i].reshape(-1, 1), 20) for i in
-                               range(self.n_models)]
+            # print(f'data manager time interval {self.data.time_interval}')
+            best_components = [self._bic_value(active_power_array[:, i].reshape(-1, 1), 20) for i in range(self.n_models)]
 
             # Fit the GMM models
-            self.gmm_models = [GaussianMixture(n_components=bc).fit(active_power_array[:, i].reshape(-1, 1))
-                               for i, bc in enumerate(best_components)]
+            self.gmm_models = [GaussianMixture(n_components=bc).fit(active_power_array[:, i].reshape(-1, 1)) for i, bc in enumerate(best_components)]
 
             self.augmentation_model = self.gmm_models
 
-        if self.augmentation_model_name == 'TC':
-            active_power_array = self.data_manager.get_active_power_data()
-            self.n_models = int(24.0 * 60.0 / self.data_manager.time_interval)
+        if self.augmentation_model_name == "TC":
+            active_power_array = self.data.get_active_power_data()
+            self.n_models = int(24.0 * 60.0 / self.data.time_interval)
 
             self.tc_model = EllipticalCopula(active_power_array.T)
             self.tc_model.fit()
@@ -171,9 +168,9 @@ class TimeSeriesDataAugmentor:
         """
         Perform data augmentation using the specified model and parameters.
         """
-        if self.augmentation_model_name == 'GMC':
+        if self.augmentation_model_name == "GMC":
             num_samples = num_days * num_nodes
-            print('The number of samples is', num_samples)
+            print("The number of samples is", num_samples)
 
             generated_pesudo_obs = np.empty((0, self.n_models))
             count = 0
@@ -188,14 +185,13 @@ class TimeSeriesDataAugmentor:
             # print(' the pesudo data is now sampled and next process is to transfer it to the realistic data')
             tran_samples = np.empty((generated_pesudo_obs.shape[0], generated_pesudo_obs.shape[1]))
             for i in range(self.n_models):
-                tran_samples[:, i] = np.array(
-                    [self._inverse_gmm_cdf(self.gmm_models[i], u) for u in generated_pesudo_obs[:, i]])
-                print(f'the {i} model columns now is calculated')
+                tran_samples[:, i] = np.array([self._inverse_gmm_cdf(self.gmm_models[i], u) for u in generated_pesudo_obs[:, i]])
+                print(f"the {i} model columns now is calculated")
             tran_samples = tran_samples.flatten()
 
-        if self.augmentation_model_name == 'GMM':
+        if self.augmentation_model_name == "GMM":
             num_samples = num_days * num_nodes
-            print('The number of samples is', num_samples)
+            print("The number of samples is", num_samples)
 
             # generating the data
             gmm_samples = np.empty((num_samples, self.n_models))
@@ -204,9 +200,9 @@ class TimeSeriesDataAugmentor:
 
             tran_samples = gmm_samples.flatten()
 
-        if self.augmentation_model_name == 'TC':
+        if self.augmentation_model_name == "TC":
             num_samples = num_days * num_nodes
-            print('The number of samples is', num_samples)
+            print("The number of samples is", num_samples)
 
             # generating the data
             TC_samples = np.empty((0, self.n_models))
@@ -215,7 +211,7 @@ class TimeSeriesDataAugmentor:
                 gen_one_sample = np.array(self.tc_model.sample(1)).reshape(1, -1)
 
                 # cancel inf
-                if np.isinf(gen_one_sample).any() == False:
+                if not np.isinf(gen_one_sample).any():
                     count += 1
                     # print(count,num_samples)
                     TC_samples = np.vstack((gen_one_sample, TC_samples))
@@ -231,45 +227,34 @@ class TimeSeriesDataAugmentor:
 
         for day in range(num_days):
             for node in range(1, num_nodes + 1):
-                time_step = timedelta(minutes=self.data_manager.time_interval)
+                time_step = timedelta(minutes=self.data.time_interval)
                 timestamps.extend([start_date + timedelta(days=day) + i * time_step for i in range(self.n_models)])
-                node_index.extend([f'active_power_node_{node}' for _ in range(self.n_models)])
+                node_index.extend([f"active_power_node_{node}" for _ in range(self.n_models)])
 
         # Create DataFrame
-        synthetic_data_df = pd.DataFrame({
-            'date_time': timestamps,
-            'node': node_index,
-            'value': tran_samples
-        })
+        synthetic_data_df = pd.DataFrame({"date_time": timestamps, "node": node_index, "value": tran_samples})
 
         # Pivot the DataFrame to get it into the desired format
-        augmented_df = synthetic_data_df.pivot(index='date_time', columns='node', values='value').reset_index()
+        augmented_df = synthetic_data_df.pivot(index="date_time", columns="node", values="value").reset_index()
         # Reorder the columns based on we need
-        active_power_cols = self.sort_columns(augmented_df.columns, r'active_power(_\w+)?')
-        reactive_power_cols = self.sort_columns(augmented_df.columns, r'reactive_power(_\w+)?')
-        renewable_active_power_cols = self.sort_columns(augmented_df.columns, r'renewable_active_power(_\w+)?')
-        renewable_reactive_power_cols = self.sort_columns(augmented_df.columns, r'renewable_reactive_power(_\w+)?')
-        price_cols = self.sort_columns(augmented_df.columns, r'price(_\w+)?')
+        active_power_cols = self.sort_columns(augmented_df.columns, r"active_power(_\w+)?")
+        reactive_power_cols = self.sort_columns(augmented_df.columns, r"reactive_power(_\w+)?")
+        renewable_active_power_cols = self.sort_columns(augmented_df.columns, r"renewable_active_power(_\w+)?")
+        renewable_reactive_power_cols = self.sort_columns(augmented_df.columns, r"renewable_reactive_power(_\w+)?")
+        price_cols = self.sort_columns(augmented_df.columns, r"price(_\w+)?")
         # Combine columns in the specified order
-        ordered_columns = (
-                ['date_time'] +
-                active_power_cols +
-                reactive_power_cols +
-                renewable_active_power_cols +
-                renewable_reactive_power_cols +
-                price_cols
-        )
+        ordered_columns = ["date_time"] + active_power_cols + reactive_power_cols + renewable_active_power_cols + renewable_reactive_power_cols + price_cols
         ordered_augmented_df = augmented_df[ordered_columns]
 
         return ordered_augmented_df
 
     def save_augmented_data(self, augmented_df, file_name):
         augmented_df.to_csv(file_name, index=False)
-        print('The data file is stored:', file_name)
+        print("The data file is stored:", file_name)
 
     def sort_columns(self, columns, pattern):
         def sort_key(col_name):
-            parts = col_name.split('_')
+            parts = col_name.split("_")
             if parts[-1].isdigit():
                 return int(parts[-1])
             return 0  # Default sort value for non-numeric endings
@@ -279,23 +264,23 @@ class TimeSeriesDataAugmentor:
 
 
 if __name__ == "__main__":
-    input_data_file = 'test_original_data.csv'  # Replace with your actual file path
-    augmentation_model_name = 'GMM'
+    input_data_file = "test_original_data.csv"  # Replace with your actual file path
+    augmentation_model_name = "GMM"
     num_nodes = 3  # For examples, if you have 34 nodes
     num_days = 3  # Assuming you want to generate data for a full year
 
     # Initialize the data manager with the input CSV file
-    data_manager = ActivePowerDataManager(input_data_file)
+    data = ActivePowerDataManager(input_data_file)
 
     # Initialize the TimeSeriesDataAugmentor with the data manager and model name
-    augmentor = TimeSeriesDataAugmentor(data_manager, augmentation_model_name)
+    augmentor = TimeSeriesDataAugmentor(data, augmentation_model_name)
 
     # Generate augmented data
-    augmented_df = augmentor.augment_data(num_nodes, num_days,start_date=datetime(2021, 1, 1, 0, 0))
+    augmented_df = augmentor.augment_data(num_nodes, num_days, start_date=datetime(2021, 1, 1, 0, 0))
 
     # Define the file name where to save the augmented data
 
     # Save the augmented data to a CSV file
-    augmentor.save_augmented_data(augmented_df, 'test_generated_data.csv')
+    augmentor.save_augmented_data(augmented_df, "test_generated_data.csv")
 
     print("Data augmentation completed and saved to file.")

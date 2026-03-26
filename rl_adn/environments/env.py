@@ -1,18 +1,21 @@
-import copy as cp
-import random
+from __future__ import annotations
 
-import gym
+from dataclasses import replace
+from typing import Any
+
+import gymnasium as gym
 import numpy as np
 import pandas as pd
-from gym import spaces
+from gymnasium import spaces
 
-from rl_adn.data_manager.data_manager import GeneralPowerDataManager
-from rl_adn.environments.battery import Battery, battery_parameters
-from rl_adn.environments.config import make_env_config, env_config
+from rl_adn.config import DEFAULT_ENV_CONFIG, EnvConfig
+from rl_adn.data import GeneralPowerDataManager
+from rl_adn.environments.battery import Battery
+from rl_adn.environments.observation import ObservationSnapshot, SlotFeatures, StateScaler, build_default_state
+from rl_adn.environments.reward import RewardBreakdown, compute_default_reward
+from rl_adn.environments.solvers import LaurentSolverAdapter, PandaPowerSolverAdapter, PowerFlowSnapshot
 from rl_adn.environments.topology_scenarios import get_topology_scenario
-from rl_adn.utility.grid import GridTensor
-from rl_adn.utility.utils import create_pandapower_net
-from rl_adn.utility.topology import (
+from rl_adn.network.topology import (
     apply_topology_scenario,
     build_adjacency_matrix,
     build_edge_index,
@@ -21,288 +24,167 @@ from rl_adn.utility.topology import (
 )
 
 
-def _require_pandapower():
-    try:
-        import pandapower as pp
-    except ImportError as exc:
-        raise ImportError("PandaPower support requires the optional dependency 'pandapower'.") from exc
-    return pp
+class PowerNetEnv(gym.Env[np.ndarray, np.ndarray]):
+    """Gymnasium environment for ESS dispatch in active distribution networks."""
 
+    metadata = {"render_modes": []}
 
-class PowerNetEnv(gym.Env):
-    """
-        Custom Environment for Power Network Management.
+    def __init__(self, config: EnvConfig = DEFAULT_ENV_CONFIG) -> None:
+        super().__init__()
+        self.config = config
+        self.algorithm = config.algorithm
+        self.train = config.train
+        self.state_pattern = config.state_pattern
+        self.feeder_id = config.feeder_id
+        self.node_count = config.node_count
+        self.battery_nodes = tuple(config.battery_nodes)
+        self.topology_config = config.topology
+        self.voltage_low_boundary, self.voltage_high_boundary = config.voltage_limits
+        self.year = config.year
+        self.month = config.month
+        self.day = config.day
 
-        The environment simulates a power network, and the agent's task is to
-        manage this network by controlling the batteries attached to various nodes.
+        self._rng = np.random.default_rng()
+        self._episode_done = False
 
-        Attributes:
-            voltage_limits (tuple): Limits for the voltage.
-            algorithm (str): Algorithm choice. Can be 'Laurent' or 'PandaPower'.
-            battery_list (list): List of nodes where batteries are attached.
-            year (int): Current year in simulation.
-            month (int): Current month in simulation.
-            day (int): Current day in simulation.
-            train (bool): Whether the environment is in training mode.
-            state_pattern (str): Pattern for the state representation.
-            network_info (dict): Information about the network.
-            node_num (int): Number of nodes in the network.
-            action_space (gym.spaces.Box): Action space of the environment.
-            data_manager (GeneralPowerDataManager): Manager for the time-series data.
-            episode_length (int): Length of an episode.
-            state_length (int): Length of the state representation.
-            state_min (np.ndarray): Minimum values for each state element.
-            state_max (np.ndarray): Maximum values for each state element.
-            state_space (gym.spaces.Box): State space of the environment.
-            current_time (int): Current timestep in the episode.
-            after_control (np.ndarray): Voltages after control is applied.
+        self._baseline_bus_info = pd.read_csv(config.bus_info_file)
+        self._baseline_line_info = pd.read_csv(config.branch_info_file)
+        if len(self._baseline_bus_info) != self.node_count:
+            raise ValueError("EnvConfig.node_count does not match the packaged bus data")
 
-        Args:
-            env_config_path (str): Path to the environment configuration file.
+        self.data_manager = GeneralPowerDataManager(config.time_series_data_path)
+        self.battery_config = replace(config.battery, time_interval_minutes=self.data_manager.time_interval)
+        self.batteries = {node_index: Battery(self.battery_config) for node_index in self.battery_nodes}
+        self.episode_length = int(24 * 60 / self.data_manager.time_interval)
+        self.state_scaler = StateScaler(
+            node_count=self.node_count,
+            battery_count=len(self.battery_nodes),
+            active_power_min=self.data_manager.active_power_min,
+            active_power_max=self.data_manager.active_power_max,
+            price_min=self.data_manager.price_min,
+            price_max=self.data_manager.price_max,
+            episode_length=self.episode_length,
+            min_soc=self.battery_config.min_soc,
+            max_soc=self.battery_config.max_soc,
+        )
 
-        """
+        self.action_space = spaces.Box(
+            low=-1.0,
+            high=1.0,
+            shape=(len(self.battery_nodes),),
+            dtype=np.float32,
+        )
+        state_dim = self.node_count + 2 * len(self.battery_nodes) + 2
+        self.observation_space = spaces.Box(
+            low=-2.0,
+            high=2.0,
+            shape=(state_dim,),
+            dtype=np.float32,
+        )
 
-    def __init__(self, env_config: dict = env_config) -> None:
-        """
-         Initialize the PowerNetEnv environment.
-         :param env_config_path: Path to the environment configuration file. Defaults to 'env_config.py'.
-         :type env_config_path: str
-         """
-        config = env_config
-
-        self.voltage_low_boundary = config['voltage_limits'][0]
-        self.voltage_high_boundary = config['voltage_limits'][1]
-        self.algorithm = config['algorithm']
-        self.battery_list = config['battery_list']
-        self.year = config['year']
-        self.month = config['month']
-        self.day = config['day']
-        self.train = config['train']
-        self.state_pattern = config['state_pattern']
-        self.feeder_id = config.get('feeder_id', f"{config['network_info']['bus_info_file']}-feeder")
-        self.topology_mode = config.get('topology_mode', 'fixed')
-        self.topology_scenario = config.get('topology_scenario')
-        self.topology_pool = config.get('topology_pool')
-        self.return_graph = bool(config.get('return_graph', False))
-
-        self.network_info = cp.deepcopy(config['network_info'])
-        # network_info for building the network
-        if self.network_info == 'None':
-            print('create basic 34 node IEEE network, when initial data is not identified')
-            self.network_info = make_env_config()['network_info']
-            self.s_base = 1000
-        else:
-            self.s_base = self.network_info['s_base']
-
-        self._baseline_bus_info = pd.read_csv(self.network_info['bus_info_file'])
-        self._baseline_line_info = pd.read_csv(self.network_info['branch_info_file'])
-        self.node_num = len((self._baseline_bus_info.NODES))
-
-        self.current_scenario = None
-        self.active_line_info = None
-        self.active_bus_info = None
-        self.active_edges = None
-        self.adjacency_matrix = None
-        self.edge_index = None
-        self._apply_topology(self._determine_scenario_id(initial=True))
-
-        self.data_manager = GeneralPowerDataManager(config['time_series_data_path'])
-        if not self.battery_list:
-            raise ValueError("No batteries specified!")
-        battery_config = dict(battery_parameters)
-        battery_config["time_interval_minutes"] = self.data_manager.time_interval
-        for node_index in self.battery_list:
-            battery = Battery(battery_config)
-            setattr(self, f"battery_{node_index}", battery)
-        self.action_space = spaces.Box(low=-1, high=1, shape=(len(self.battery_list), 1), dtype=np.float32)
         self.active_power_indices = [self.data_manager.df.columns.get_loc(col) for col in self.data_manager.active_power_cols]
-        self.renewable_active_power_indices = [
-            self.data_manager.df.columns.get_loc(col) for col in self.data_manager.renewable_active_power_cols
-        ]
+        self.renewable_active_power_indices = [self.data_manager.df.columns.get_loc(col) for col in self.data_manager.renewable_active_power_cols]
         self.price_index = self.data_manager.df.columns.get_loc(self.data_manager.price_col[0])
-        self.episode_length: int = 24 * 60 / self.data_manager.time_interval
 
-        if self.state_pattern == 'default':
-            self.state_length = len(self.battery_list) * 2 + self.node_num + 2
-            print(self.data_manager.active_power_min)
-            print(self.data_manager.price_min)
-            self.state_min = np.array([self.data_manager.active_power_min, 0.2, self.data_manager.price_min, 0.0, 0.5])
-            self.state_max = np.array(
-                [self.data_manager.active_power_max, 0.8, self.data_manager.price_max, self.episode_length - 1, 1.5])
-        else:
-            raise ValueError("Invalid value for 'state_pattern'. Expected 'default' or define by yourself.")
-
-        self.state_space = spaces.Box(low=-2, high=2, shape=(self.state_length,), dtype=np.float32)
-
-    def reset(self, return_info: bool = False):
-        self._apply_topology(self._determine_scenario_id())
-        self._reset_date()
-        self._reset_time()
-        self._reset_batteries()
-        state = self._build_state()
-        if return_info:
-            return state, self._build_info(state)
-        return state
-
-    def _reset_date(self) -> None:
-        """
-        Resets the date for the next episode.
-        """
-        if self.train:
-            self.year, self.month, self.day = random.choice(self.data_manager.train_dates)
-        else:
-            self.year, self.month, self.day = random.choice(self.data_manager.test_dates)
-
-    def _reset_time(self) -> None:
-        """
-        Resets the time for the next episode.
-        """
         self.current_time = 0
+        self.current_scenario = None
+        self.active_line_info: pd.DataFrame | None = None
+        self.active_bus_info: pd.DataFrame | None = None
+        self.active_edges: list[tuple[int, int]] = []
+        self.adjacency_matrix: np.ndarray | None = None
+        self.edge_index: np.ndarray | None = None
+        self.solver = None
 
-    def _reset_batteries(self) -> None:
-        """
-        Resets the batteries for the next episode.
-        """
-        for node_index in self.battery_list:
-            getattr(self, f"battery_{node_index}").reset()
+        self.current_slot_features: SlotFeatures | None = None
+        self.current_observation: ObservationSnapshot | None = None
+        self.current_precontrol_snapshot: PowerFlowSnapshot | None = None
+        self.last_reward_breakdown: RewardBreakdown | None = None
 
-    def _build_state(self) -> np.ndarray:
-        """
-        Builds the current state of the environment based on the current time and data from PowerDataManager.
+        self._apply_topology(self.topology_config.scenario_id)
 
-        Returns:
-            normalized_state (np.ndarray): The current state of the environment, normalized between 0 and 1.
-                The state includes the following variables:
-                - Netload power
-                - SOC (State of Charge) of the last battery in the battery list
-                - Price of the energy
-                - Time state of the day
-                - Voltage from estimation
-        """
-        # TODO: modify get state observation to fit new resources and data
-        obs = self._get_obs()
-        if self.state_pattern == 'default':
-            active_power = np.array(list(obs['node_data']['active_power'].values()))
-            price = float(obs['price'])
-            soc_list = np.array(
-                [obs['battery_data']['soc'][f'battery_{node_index}'] for node_index in self.battery_list])
-            vm_pu_battery = np.array(
-                [obs['node_data']['voltage'][f'node_{node_index}'] for node_index in self.battery_list])
-            state = np.concatenate((active_power, soc_list, [price], [self.current_time], vm_pu_battery))
-            self.state = state
-            normalized_state = self._normalize_state(state)
-            self.normalized_state = normalized_state
-        return normalized_state
+    def reset(self, *, seed: int | None = None, options: dict[str, Any] | None = None) -> tuple[np.ndarray, dict[str, Any]]:
+        """Reset the environment and return the initial observation and metadata."""
+        super().reset(seed=seed)
+        if seed is not None:
+            self._rng = np.random.default_rng(seed)
 
-    def _split_state(self, state):
-        net_load_length = self.node_num
-        num_batteries = len(self.battery_list)
+        scenario_id = self._sample_topology_scenario()
+        self._apply_topology(scenario_id)
+        self._select_episode_date()
+        self.current_time = 0
+        self._episode_done = False
+        self._reset_batteries()
+        self.current_observation, self.current_slot_features, self.current_precontrol_snapshot = self._observe_current_slot()
+        return self.current_observation.normalized_state.copy(), self._build_info()
 
-        soc_all_length = num_batteries
-        vm_pu_battery_nodes_length = num_batteries
+    def step(self, action: np.ndarray) -> tuple[np.ndarray, float, bool, bool, dict[str, Any]]:
+        """Advance one environment step using a flat action vector in ``[-1, 1]``."""
+        if self.current_observation is None or self.current_slot_features is None or self.current_precontrol_snapshot is None:
+            raise RuntimeError("reset() must be called before step()")
+        if self._episode_done:
+            raise RuntimeError("Episode has finished; call reset() before step() again")
 
-        soc_all_start = net_load_length
-        price_start = soc_all_start + soc_all_length
-        current_time_start = price_start + 1
-        vm_pu_battery_nodes_start = current_time_start + 1
+        action_vector = np.asarray(action, dtype=np.float32).reshape(-1)
+        if action_vector.shape != (len(self.battery_nodes),):
+            raise ValueError(f"Expected action shape {(len(self.battery_nodes),)}, received {tuple(action_vector.shape)}")
 
-        net_load = state[:net_load_length]
-        soc_all = state[soc_all_start:soc_all_start + soc_all_length]
-        price = np.array([state[price_start]])
-        current_time = np.array([state[current_time_start]])
-        vm_pu_battery_nodes = state[vm_pu_battery_nodes_start:]
+        battery_dispatch_kw = np.array(
+            [self.batteries[node_index].step(action_component) for node_index, action_component in zip(self.battery_nodes, action_vector)],
+            dtype=np.float32,
+        )
 
-        return net_load, soc_all, price, current_time, vm_pu_battery_nodes
+        net_load_kw = self.current_slot_features.active_power_kw - self.current_slot_features.renewable_active_power_kw
+        post_control_snapshot = self.solver.dispatch(net_load_kw, self.battery_nodes, battery_dispatch_kw)
+        reward_breakdown = compute_default_reward(
+            price=self.current_slot_features.price,
+            saved_power_kw=self.current_precontrol_snapshot.import_power_kw - post_control_snapshot.import_power_kw,
+            battery_voltages_pu=post_control_snapshot.node_voltages_pu[list(self.battery_nodes)],
+        )
+        self.last_reward_breakdown = reward_breakdown
 
-    def _normalize_state(self, state: np.ndarray) -> np.ndarray:
-        """
-        Normalizes the state variables.
+        truncated = self.current_time >= self.episode_length - 1
+        terminated = False
+        info = self._build_info(post_control_snapshot=post_control_snapshot, battery_dispatch_kw=battery_dispatch_kw)
 
-        Parameters:
-            state (np.ndarray): The current state of the environment.
+        if truncated:
+            self._episode_done = True
+            return self.current_observation.normalized_state.copy(), reward_breakdown.total, terminated, True, info
 
-        Returns:
-            np.ndarray: The normalized state of the environment.
-        """
-        state[:self.node_num] = (state[:self.node_num] - self.state_min[0]) / (self.state_max[0] - self.state_min[0])
-        state[self.node_num:self.node_num + len(self.battery_list)] = (state[self.node_num:self.node_num + len(
-            self.battery_list)] - self.state_min[1]) / (self.state_max[1] - self.state_min[1])
-        state[self.node_num + len(self.battery_list):self.node_num + len(self.battery_list) + 1] = (state[
-                                                                                                    self.node_num + len(
-                                                                                                        self.battery_list):self.node_num + len(
-                                                                                                        self.battery_list) + 1] -
-                                                                                                    self.state_min[
-                                                                                                        2]) / (
-                                                                                                               self.state_max[
-                                                                                                                   2] -
-                                                                                                               self.state_min[
-                                                                                                                   2])
-        state[self.node_num + len(self.battery_list) + 1:self.node_num + len(self.battery_list) + 2] = (state[
-                                                                                                        self.node_num + len(
-                                                                                                            self.battery_list) + 1:self.node_num + len(
-                                                                                                            self.battery_list) + 2] -
-                                                                                                        self.state_min[
-                                                                                                            3]) / (
-                                                                                                                   self.state_max[
-                                                                                                                       3] -
-                                                                                                                   self.state_min[
-                                                                                                                       3])
-        normalized_state = state
-        return normalized_state
+        self.current_time += 1
+        self.current_observation, self.current_slot_features, self.current_precontrol_snapshot = self._observe_current_slot()
+        return self.current_observation.normalized_state.copy(), reward_breakdown.total, terminated, False, info
 
-    def _denormalize_state(self, normalized_state: np.ndarray) -> np.ndarray:
-        """
-        Denormalizes the state variables.
+    def get_topology_metadata(self) -> dict[str, Any]:
+        return {
+            "feeder_id": self.feeder_id,
+            "scenario_id": self.current_scenario.scenario_id,
+            "node_count": self.node_count,
+            "edge_count": len(self.active_edges),
+            "active_edges": list(self.active_edges),
+        }
 
-        Parameters:
-            normalized_state (np.ndarray): The normalized state of the environment.
+    def get_graph_data(self) -> dict[str, Any]:
+        if self.adjacency_matrix is None or self.edge_index is None or self.active_line_info is None:
+            raise RuntimeError("Topology has not been initialized")
+        return {
+            "adjacency": self.adjacency_matrix.copy(),
+            "edge_index": self.edge_index.copy(),
+            "node_ids": np.arange(1, self.node_count + 1, dtype=np.int64),
+            "active_line_data": self.active_line_info[["FROM", "TO", "R", "X", "B", "STATUS", "TAP"]].to_dict("records"),
+        }
 
-        Returns:
-            np.ndarray: The denormalized state of the environment.
-        """
-        normalized_state[:self.node_num] = normalized_state[:self.node_num] * (self.state_max[0] - self.state_min[0]) + \
-                                           self.state_min[0]
+    def render(self) -> None:
+        return None
 
-        normalized_state[self.node_num:self.node_num + len(self.battery_list)] = normalized_state[
-                                                                                 self.node_num:self.node_num + len(
-                                                                                     self.battery_list)] * (
-                                                                                             self.state_max[1] -
-                                                                                             self.state_min[1]) + \
-                                                                                 self.state_min[1]
-        normalized_state[
-        self.node_num + len(self.battery_list):self.node_num + len(self.battery_list) + 1] = normalized_state[
-                                                                                             self.node_num + len(
-                                                                                                 self.battery_list):self.node_num + len(
-                                                                                                 self.battery_list) + 1] * (
-                                                                                                         self.state_max[
-                                                                                                             2] -
-                                                                                                         self.state_min[
-                                                                                                             2]) + \
-                                                                                             self.state_min[2]
-        normalized_state[
-        self.node_num + len(self.battery_list) + 1:self.node_num + len(self.battery_list) + 2] = normalized_state[
-                                                                                                 self.node_num + len(
-                                                                                                     self.battery_list) + 1:self.node_num + len(
-                                                                                                     self.battery_list) + 2] * (
-                                                                                                             self.state_max[
-                                                                                                                 3] -
-                                                                                                             self.state_min[
-                                                                                                                 3]) + \
-                                                                                                 self.state_min[3]
-        denormalized_state = normalized_state
-        return denormalized_state
-
-    def _determine_scenario_id(self, initial: bool = False) -> str:
-        if self.topology_mode == 'fixed':
-            return self.topology_scenario or 'TP1'
-        if self.topology_mode == 'scenario_pool':
-            if not self.topology_pool:
-                raise ValueError("topology_pool must be provided when topology_mode='scenario_pool'")
-            return random.choice(self.topology_pool)
-        raise ValueError("Invalid topology_mode. Expected 'fixed' or 'scenario_pool'.")
+    def _sample_topology_scenario(self) -> str:
+        if self.topology_config.mode == "fixed":
+            return self.topology_config.scenario_id
+        if self.topology_config.mode == "scenario_pool":
+            return str(self._rng.choice(self.topology_config.scenario_pool))
+        raise ValueError("Unsupported topology mode")
 
     def _apply_topology(self, scenario_id: str) -> None:
-        scenario = get_topology_scenario(self.node_num, scenario_id)
+        scenario = get_topology_scenario(self.node_count, scenario_id)
         active_line_info = apply_topology_scenario(self._baseline_line_info, scenario)
         validation = validate_radial_topology(self._baseline_bus_info, active_line_info)
         if not (validation["is_connected"] and validation["is_radial"] and validation["slack_reaches_all"]):
@@ -312,269 +194,91 @@ class PowerNetEnv(gym.Env):
         self.active_line_info = active_line_info
         self.active_bus_info = self._baseline_bus_info.copy(deep=True)
         self.active_edges = get_active_edges(active_line_info)
-        self.adjacency_matrix = build_adjacency_matrix(self.node_num, active_line_info)
+        self.adjacency_matrix = build_adjacency_matrix(self.node_count, active_line_info)
         self.edge_index = build_edge_index(active_line_info)
 
         if self.algorithm == "Laurent":
-            self.net = GridTensor(
-                node_file_path="",
-                lines_file_path="",
-                from_file=False,
-                nodes_frame=self.active_bus_info.copy(deep=True),
-                lines_frame=self.active_line_info.copy(deep=True),
-                s_base=self.s_base,
+            self.solver = LaurentSolverAdapter(
+                bus_info=self.active_bus_info,
+                line_info=self.active_line_info,
+                s_base=self.config.s_base,
             )
-            self.net.Q_file = np.zeros(self.node_num - 1)
-            self.dense_Ybus = self.net._make_y_bus().toarray()
         elif self.algorithm == "PandaPower":
-            self.net = create_pandapower_net(
-                self.network_info,
-                branch_info=self.active_line_info.copy(deep=True),
-                bus_info=self.active_bus_info.copy(deep=True),
+            self.solver = PandaPowerSolverAdapter(
+                network_info=self.config.network_info,
+                bus_info=self.active_bus_info,
+                line_info=self.active_line_info,
+                s_base=self.config.s_base,
             )
         else:
-            raise ValueError("Invalid algorithm choice. Please choose 'Laurent' or 'PandaPower'.")
+            raise ValueError("Unsupported algorithm")
 
-    def _extract_slot_features(self, one_slot_data: np.ndarray):
-        active_power = cp.copy(one_slot_data[self.active_power_indices]).astype(float)
+    def _select_episode_date(self) -> None:
+        candidate_dates = self.data_manager.train_dates if self.train else self.data_manager.test_dates
+        if not candidate_dates:
+            raise ValueError("No episode dates are available for the requested split")
+        date_index = int(self._rng.integers(0, len(candidate_dates)))
+        self.year, self.month, self.day = candidate_dates[date_index]
+
+    def _reset_batteries(self) -> None:
+        for battery in self.batteries.values():
+            battery.reset()
+
+    def _extract_slot_features(self, timeslot: int) -> SlotFeatures:
+        one_slot_data = self.data_manager.select_timeslot_data(self.year, self.month, self.day, timeslot)
+        active_power = np.asarray(one_slot_data[self.active_power_indices], dtype=np.float32)
         renewable_active_power = np.zeros_like(active_power)
         if self.renewable_active_power_indices:
-            renewable_active_power = one_slot_data[self.renewable_active_power_indices].astype(float)
+            renewable_active_power = np.asarray(one_slot_data[self.renewable_active_power_indices], dtype=np.float32)
         price = float(one_slot_data[self.price_index])
 
-        if active_power.shape[0] != self.node_num:
-            raise ValueError(
-                f"Time-series active power dimension {active_power.shape[0]} does not match feeder node count {self.node_num}"
-            )
-        if renewable_active_power.shape[0] != self.node_num:
-            raise ValueError(
-                f"Time-series renewable power dimension {renewable_active_power.shape[0]} does not match feeder node count {self.node_num}"
-            )
-        return active_power, renewable_active_power, price
+        if active_power.shape[0] != self.node_count:
+            raise ValueError(f"Time-series active power dimension {active_power.shape[0]} does not match feeder node count {self.node_count}")
+        if renewable_active_power.shape[0] != self.node_count:
+            raise ValueError(f"Time-series renewable power dimension {renewable_active_power.shape[0]} does not match feeder node count {self.node_count}")
 
-    def _get_obs(self):
-        """
-        Executes the power flow based on the chosen algorithm and returns the observations.
+        return SlotFeatures(
+            active_power_kw=active_power,
+            renewable_active_power_kw=renewable_active_power,
+            price=price,
+        )
 
-        Returns:
-            dict: The observation dictionary containing various state elements.
-        """
-        if self.state_pattern == 'default':
-            one_slot_data = self.data_manager.select_timeslot_data(self.year, self.month, self.day, self.current_time)
-            active_power, renewable_active_power, price = self._extract_slot_features(one_slot_data)
+    def _observe_current_slot(self) -> tuple[ObservationSnapshot, SlotFeatures, PowerFlowSnapshot]:
+        slot_features = self._extract_slot_features(self.current_time)
+        net_load_kw = slot_features.active_power_kw - slot_features.renewable_active_power_kw
+        precontrol_snapshot = self.solver.observe(net_load_kw)
+        battery_soc = np.array([self.batteries[node_index].SOC() for node_index in self.battery_nodes], dtype=np.float32)
+        observation = build_default_state(
+            slot_features=slot_features,
+            battery_soc=battery_soc,
+            current_time=self.current_time,
+            node_voltages_pu=precontrol_snapshot.node_voltages_pu,
+            battery_nodes=self.battery_nodes,
+            scaler=self.state_scaler,
+        )
+        return observation, slot_features, precontrol_snapshot
 
-            if self.algorithm == "Laurent":
-                self.active_power = (active_power - renewable_active_power)[1:self.node_num]
-                reactive_power = np.zeros(self.node_num - 1)
-                self.solution = self.net.run_pf(active_power=self.active_power)
-
-                obs = {'node_data': {'voltage': {}, 'active_power': {}, 'reactive_power': {},
-                                     'renewable_active_power': {}},
-                       'battery_data': {'soc': {}}, 'price': {}, 'aux': {}}
-
-                for node_index in range(len(self.net.bus_info.NODES)):
-                    if node_index == 0:
-                        obs['node_data']['voltage'][f'node_{node_index}'] = 1.0
-                        obs['node_data']['active_power'][f'node_{node_index}'] = 0.0
-                        obs['node_data']['renewable_active_power'][f'node_{node_index}'] = 0.0
-                    else:
-                        obs['node_data']['voltage'][f'node_{node_index}'] = abs(
-                            self.solution['v'].T[node_index - 1]).squeeze()
-                        obs['node_data']['active_power'][f'node_{node_index}'] = active_power[node_index - 1]
-                        obs['node_data']['renewable_active_power'][f'node_{node_index}'] = renewable_active_power[
-                            node_index - 1]
-                for node_index in self.battery_list:
-                    obs['battery_data']['soc'][f'battery_{node_index}'] = getattr(self, f'battery_{node_index}').SOC()
-                obs['price'] = price
-            else:
-                active_power[0] = 0
-                renewable_active_power[0] = 0
-                for bus_index in self.net.load.bus.index:
-                    self.net.load.p_mw[bus_index] = (active_power[bus_index] - renewable_active_power[
-                        bus_index]) / self.s_base
-                    self.net.load.q_mvar[bus_index] = 0
-                _require_pandapower().runpp(self.net, algorithm='nr')
-                v_real = self.net.res_bus["vm_pu"].values * np.cos(np.deg2rad(self.net.res_bus["va_degree"].values))
-                v_img = self.net.res_bus["vm_pu"].values * np.sin(np.deg2rad(self.net.res_bus["va_degree"].values))
-                v_result = v_real + 1j * v_img
-
-                obs = {'node_data': {'voltage': {}, 'active_power': {}, 'reactive_power': {},
-                                     'renewable_active_power': {}},
-                       'battery_data': {'soc': {}}, 'price': {}, 'aux': {}}
-
-                for node_index in self.net.load.bus.index:
-                    bus_idx = self.net.load.at[node_index, 'bus']
-                    obs['node_data']['voltage'][f'node_{node_index}'] = self.net.res_bus.vm_pu.at[bus_idx]
-                    obs['node_data']['active_power'][f'node_{node_index}'] = active_power[node_index]
-                    obs['node_data']['reactive_power'][f'node_{node_index}'] = self.net.res_load.q_mvar[node_index]
-                    obs['node_data']['renewable_active_power'][f'node_{node_index}'] = renewable_active_power[
-                        node_index]
-                for node_index in self.battery_list:
-                    obs['battery_data']['soc'][f'battery_{node_index}'] = getattr(self, f'battery_{node_index}').SOC()
-                obs['price'] = price
-        else:
-            raise ValueError('please redesign the get obs function to fit the pattern you want')
-        return obs
-
-    def _apply_battery_actions(self, action):
-        '''apply action to battery charge/discharge, update the battery condition, excute power flow, update the network condition'''
-        if self.state_pattern == 'default':
-            if self.algorithm == "Laurent":
-                v = self.solution["v"]
-                v_totall = np.insert(v, 0, 1)
-                current_each_node = np.matmul(self.dense_Ybus, v_totall)
-                power_imported_from_ex_grid_before = current_each_node[0].real
-
-                for i, node_index in enumerate(self.battery_list):
-                    getattr(self, f"battery_{node_index}").step(action[i])
-                    self.active_power[node_index - 1] += getattr(self, f"battery_{node_index}").energy_change
-                self.solution = self.net.run_pf(active_power=self.active_power)
-
-                v = self.solution["v"]
-                v_totall = np.insert(v, 0, 1)
-                vm_pu_after_control = cp.deepcopy(abs(v_totall))
-                vm_pu_after_control_bat = np.squeeze(vm_pu_after_control)[self.battery_list]
-                self.after_control = vm_pu_after_control
-                current_each_node = np.matmul(self.dense_Ybus, v_totall)
-                power_imported_from_ex_grid_after = current_each_node[0].real
-                saved_energy = power_imported_from_ex_grid_before - power_imported_from_ex_grid_after
-            else:
-                power_imported_from_ex_grid_before = cp.deepcopy(self.net.res_ext_grid['p_mw'])
-
-                for i, node_index in enumerate(self.battery_list):
-                    getattr(self, f"battery_{node_index}").step(action[i])
-                    self.net.load.p_mw[node_index] += getattr(self, f"battery_{node_index}").energy_change / 1000
-                _require_pandapower().runpp(self.net, algorithm='nr')
-                vm_pu_after_control = cp.deepcopy(self.net.res_bus.vm_pu).to_numpy(dtype=float)
-                vm_pu_after_control_bat = vm_pu_after_control[self.battery_list]
-
-                self.after_control = vm_pu_after_control
-                power_imported_from_ex_grid_after = self.net.res_ext_grid['p_mw']
-                saved_energy = power_imported_from_ex_grid_before - power_imported_from_ex_grid_after
-        else:
-            raise ValueError('Expected default or define yourself based on the goal')
-        return saved_energy, vm_pu_after_control_bat
-
-    def step(self, action: np.ndarray) -> tuple:
-        """
-        Advance the environment by one timestep based on the provided action.
-
-        :param action: Action to execute.
-        :type action: np.ndarray
-        :return: Tuple containing the next normalized observation, the reward, a boolean indicating if the episode has ended, and additional info.
-        :rtype: tuple
-        """
-
-        current_normalized_obs = self.normalized_state
-        info = self._build_info(current_normalized_obs)
-
-        # Apply battery actions and get updated observations
-        saved_energy, vm_pu_after_control_bat = self._apply_battery_actions(action)
-
-        reward = self._calculate_reward(current_normalized_obs, vm_pu_after_control_bat, saved_energy)
-
-        finish = (self.current_time == self.episode_length - 1)
-        self.current_time += 1
-        if finish:
-            self.current_time = 0
-            next_normalized_obs = self.reset()
-        else:
-            next_normalized_obs = self._build_state()
-        return next_normalized_obs, float(reward), finish, info
-
-    def get_topology_metadata(self):
-        return {
+    def _build_info(
+        self,
+        *,
+        post_control_snapshot: PowerFlowSnapshot | None = None,
+        battery_dispatch_kw: np.ndarray | None = None,
+    ) -> dict[str, Any]:
+        info: dict[str, Any] = {
             "feeder_id": self.feeder_id,
-            "scenario_id": self.current_scenario.scenario_id,
-            "node_count": self.node_num,
-            "edge_count": len(self.active_edges),
-            "active_edges": list(self.active_edges),
-        }
-
-    def get_graph_data(self):
-        return {
-            "adjacency": self.adjacency_matrix.copy(),
-            "edge_index": self.edge_index.copy(),
-            "node_ids": np.arange(1, self.node_num + 1, dtype=np.int64),
-            "active_line_data": self.active_line_info[["FROM", "TO", "R", "X", "B", "STATUS", "TAP"]].to_dict("records"),
-        }
-
-    def _build_info(self, current_normalized_obs=None):
-        info = {
             "topology_scenario": self.current_scenario.scenario_id,
-            "feeder_id": self.feeder_id,
             "active_edges_count": len(self.active_edges),
+            "current_time": self.current_time,
         }
-        if current_normalized_obs is not None:
-            info["current_normalized_obs"] = current_normalized_obs
+        if self.current_observation is not None:
+            info["current_normalized_obs"] = self.current_observation.normalized_state.copy()
+        if battery_dispatch_kw is not None:
+            info["battery_dispatch_kw"] = np.asarray(battery_dispatch_kw, dtype=np.float32).copy()
+        if post_control_snapshot is not None and self.last_reward_breakdown is not None:
+            info["post_control_voltage_pu"] = post_control_snapshot.node_voltages_pu.copy()
+            info["reward_breakdown"] = {
+                "economic": self.last_reward_breakdown.economic,
+                "voltage_penalty": self.last_reward_breakdown.voltage_penalty,
+                "saved_money": self.last_reward_breakdown.saved_money,
+            }
         return info
-
-    def _calculate_reward(self, current_normalized_obs: np.ndarray, vm_pu_after_control_bat: np.ndarray,
-                          saved_power: float) -> float:
-        """
-        Calculate the reward based on the current observation and saved power. the default version is to calculate the battey saved energy
-        based on the current price
-
-        Parameters:
-            current_normalized_obs (np.ndarray): The current normalized observations.
-            vm_pu_after_control_bat (np.ndarray): The voltage after control at battery locations.
-            saved_power (float): The amount of power saved.
-
-        Returns:
-            float: Calculated reward.
-        """
-        if self.state_pattern == 'default':
-            reward_for_power = 1 * current_normalized_obs[self.node_num + len(self.battery_list)] * float(saved_power)
-            reward_for_penalty = 0.0
-
-            for vm_pu_bat in vm_pu_after_control_bat:
-                reward_for_penalty += min(0, 100 * (0.05 - abs(1.0 - vm_pu_bat)))
-
-            self.reward_for_power = reward_for_power
-            self.reward_for_penalty = reward_for_penalty
-            self.saved_money = -1 * self._denormalize_state(current_normalized_obs)[
-                self.node_num + len(self.battery_list)] * float(saved_power)
-
-            reward = reward_for_power + reward_for_penalty
-        else:
-            raise ValueError(
-                "Invalid value for 'state_pattern'. Expected 'default, or define by yourself based on different goal")
-
-        return reward
-
-    def render(self, current_obs, next_obs, reward, finish):
-        """
-        Render the environment's current state.
-
-        :param current_obs: Current observation.
-        :type current_obs: np.array
-        :param next_obs: Next observation.
-        :type next_obs: np.array
-        :param reward: Reward obtained from the last action.
-        :type reward: float
-        :param finish: Whether the episode has ended.
-        :type finish: bool
-        """
-        print('state={}, next_state={}, reward={:.4f}, terminal={}\n'.format(current_obs, next_obs, reward, finish))
-
-
-if __name__ == '__main__':
-    power_net_env = PowerNetEnv(env_config=env_config)
-    power_net_env.reset()
-
-    for j in range(1):
-        episode_reward = 0
-        for i in range(1000):
-            # 1 is charge -1 is discharge
-            tem_action = np.ones(len(power_net_env.battery_list))
-            # tem_action = power_net_env.action_space.sample()
-            print('year, month, day, current time',
-                  (power_net_env.year, power_net_env.month, power_net_env.day, power_net_env.current_time))
-            # print(f'current month is {power_net_env.month}, current day is {power_net_env.day}, current time is {power_net_env.current_time}')
-            next_obs, reward, finish, info = power_net_env.step(tem_action)
-            # print(power_net_env.reward_for_power)
-            print(power_net_env.reward_for_penalty)
-            # print('reward',reward)
-            episode_reward += reward
-            # power_net_env.render(current_obs, next_obs, reward, finish)
-        print(episode_reward)

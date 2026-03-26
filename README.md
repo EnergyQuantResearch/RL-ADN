@@ -8,25 +8,25 @@ RL-ADN now supports `topology-as-scenario` for the `34-bus` and `69-bus` feeders
 
 ## Quickstart
 
-Install runtime dependencies:
+Install the package:
 
 ```bash
-py -3 -m pip install -r requirements.txt
+py -3 -m pip install .
 ```
 
 Install the development toolchain:
 
 ```bash
-py -3 -m pip install -r requirements-dev.txt
+py -3 -m pip install -e .[dev]
 ```
 
-Run the lightweight test suite:
+Run the lightweight verification suite:
 
 ```bash
-py -3 -m pytest tests -q -m "not powerflow"
+py -3 -m pytest -q -m "not powerflow"
 ```
 
-Some power-flow validation tests require `pandapower`. If it is not installed, those tests are skipped automatically.
+Power-flow validation tests require the optional `pandapower` extra and are skipped when it is not installed.
 
 ## First Import
 
@@ -35,7 +35,7 @@ from rl_adn import PowerNetEnv, make_env_config
 
 config = make_env_config()
 env = PowerNetEnv(config)
-state, info = env.reset(return_info=True)
+state, info = env.reset(seed=2026)
 ```
 
 Run the script-style quickstart:
@@ -58,7 +58,7 @@ from rl_adn import PowerNetEnv, make_env_config
 
 config = make_env_config(node=34, topology_scenario="TP4", return_graph=True)
 env = PowerNetEnv(config)
-state, info = env.reset(return_info=True)
+state, info = env.reset(seed=2026)
 print(info["topology_scenario"])
 ```
 
@@ -72,7 +72,7 @@ config = make_env_config(
     return_graph=True,
 )
 env = PowerNetEnv(config)
-state, info = env.reset(return_info=True)
+state, info = env.reset(seed=2026)
 ```
 
 Inspect the active topology for later GNN work:
@@ -84,6 +84,27 @@ graph = env.get_graph_data()
 
 `metadata` includes feeder id, scenario id, node count, edge count, and active edges. `graph` returns plain NumPy/Python structures such as adjacency and edge index.
 
+## Public API
+
+The stable package surface is:
+
+- `Battery`
+- `BatteryConfig`
+- `EnvConfig`
+- `TopologyConfig`
+- `GeneralPowerDataManager`
+- `PowerNetEnv`
+- `make_env_config(...)`
+
+`make_env_config(...)` now returns a typed `EnvConfig` dataclass rather than a loose dictionary.
+
+`PowerNetEnv` follows Gymnasium semantics:
+
+```python
+obs, info = env.reset(seed=2026)
+next_obs, reward, terminated, truncated, info = env.step(action)
+```
+
 ## Repository Structure
 
 - `rl_adn/`: package source code
@@ -93,7 +114,7 @@ graph = env.get_graph_data()
 
 ## Highlights
 
-- Flexible active distribution network environment modeling
+- Gymnasium-style active distribution network environment
 - Laurent power flow solver for faster training-time simulation
 - DRL algorithms and optimization baselines in the same repository
 - Bundled network and time-series datasets for reproducible experiments
@@ -107,9 +128,9 @@ The library was originally released alongside the RL-ADN research paper on optim
 ## Recommended Learning Path
 
 1. Run `examples/quickstart_env.py` for the minimal package-backed environment flow.
-2. Open `examples/Customize_env.ipynb` to understand configuration customization.
-3. Open the DDPG training notebook once the environment baseline is clear.
-4. Try fixed and pooled topology scenarios before moving on to GNN-based experiments.
+2. Read the typed config surface through `rl_adn.make_env_config(...)`.
+3. Try fixed and pooled topology scenarios before moving on to GNN-based experiments.
+4. Use notebooks only as supplementary material after the script workflow is clear.
 
 ## Current Limits
 

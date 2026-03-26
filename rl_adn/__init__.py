@@ -1,30 +1,32 @@
-"""Top-level package for RL-ADN."""
+"""Public package surface for RL-ADN."""
 
 from importlib import import_module
 
-__version__ = "0.1.3"
+__version__ = "0.2.0"
 
 __all__ = [
     "__version__",
     "Battery",
-    "battery_parameters",
+    "BatteryConfig",
+    "EnvConfig",
     "GeneralPowerDataManager",
     "PowerNetEnv",
-    "env_config",
+    "TopologyConfig",
     "make_env_config",
 ]
 
 _LAZY_EXPORTS = {
-    "Battery": ("rl_adn.environments.battery", "Battery"),
-    "battery_parameters": ("rl_adn.environments.battery", "battery_parameters"),
-    "GeneralPowerDataManager": ("rl_adn.data_manager", "GeneralPowerDataManager"),
+    "Battery": ("rl_adn.environments", "Battery"),
+    "BatteryConfig": ("rl_adn.config", "BatteryConfig"),
+    "EnvConfig": ("rl_adn.config", "EnvConfig"),
+    "GeneralPowerDataManager": ("rl_adn.data", "GeneralPowerDataManager"),
     "PowerNetEnv": ("rl_adn.environments", "PowerNetEnv"),
-    "env_config": ("rl_adn.environments", "env_config"),
-    "make_env_config": ("rl_adn.environments", "make_env_config"),
+    "TopologyConfig": ("rl_adn.config", "TopologyConfig"),
+    "make_env_config": ("rl_adn.config", "make_env_config"),
 }
 
 
-def __getattr__(name):
+def __getattr__(name: str):
     if name not in _LAZY_EXPORTS:
         raise AttributeError(f"module 'rl_adn' has no attribute {name!r}")
 
