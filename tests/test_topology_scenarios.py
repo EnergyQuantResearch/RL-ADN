@@ -96,6 +96,18 @@ def test_make_env_config_accepts_fixed_topology_scenario():
     assert config["topology_scenario"] == "TP3"
 
 
+def test_make_env_config_provides_curated_defaults_for_supported_feeders():
+    config_34 = make_env_config(node=34)
+    config_69 = make_env_config(
+        node=69,
+        topology_scenario="TP2",
+        time_series_data_path="synthetic.csv",
+    )
+
+    assert config_34["battery_list"] == [11, 15, 26, 29, 33]
+    assert config_69["battery_list"] == [13, 15, 17, 19, 21, 23, 25, 26, 64]
+
+
 def test_make_env_config_rejects_empty_scenario_pool():
     with pytest.raises(ValueError):
         make_env_config(node=34, topology_mode="scenario_pool", topology_pool=[])

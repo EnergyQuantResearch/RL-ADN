@@ -9,7 +9,12 @@ NETWORK_ROOT = DATA_ROOT / "network_data"
 TIME_SERIES_ROOT = DATA_ROOT / "time_series_data"
 
 DEFAULT_NODE = 34
-DEFAULT_BATTERY_LIST = [11, 15, 26, 29, 33]
+DEFAULT_BATTERY_LISTS = {
+    # Paper battery placements are reported with 1-based node labels.
+    # RL-ADN stores controllable battery nodes as zero-based bus indices.
+    34: [11, 15, 26, 29, 33],  # paper nodes {12, 16, 27, 30, 34}
+    69: [13, 15, 17, 19, 21, 23, 25, 26, 64],  # paper nodes {14, 16, 18, 20, 22, 24, 26, 27, 65}
+}
 
 
 def _resolve_network_info(node: int, vm_pu: float, s_base: float) -> Dict[str, object]:
@@ -75,9 +80,12 @@ def make_env_config(
             get_topology_scenario(node, scenario_id)
 
     if battery_list is None:
-        if node != DEFAULT_NODE:
-            raise ValueError("battery_list must be provided for node counts other than 34")
-        battery_list = list(DEFAULT_BATTERY_LIST)
+        default_battery_list = DEFAULT_BATTERY_LISTS.get(node)
+        if default_battery_list is None:
+            raise ValueError(
+                f"battery_list must be provided for node counts without a curated default (received node={node})"
+            )
+        battery_list = list(default_battery_list)
 
     return {
         "voltage_limits": [0.95, 1.05],
