@@ -250,7 +250,7 @@ def generate_network(nodes, child=3, plot_graph=False, load_factor=2, line_facto
 
     return nodes_frame, lines_frame
 
-def create_pandapower_net(network_info: dict):
+def create_pandapower_net(network_info: dict, branch_info: pd.DataFrame = None, bus_info: pd.DataFrame = None):
     """
     Creates a pandapower network from given network information.
 
@@ -270,8 +270,14 @@ def create_pandapower_net(network_info: dict):
     bus_info_file=network_info['bus_info_file']
     pp, _ = _require_pandapower()
 
-    branch_info = pd.read_csv(branch_info_file, encoding='utf-8')
-    bus_info = pd.read_csv(bus_info_file, encoding='utf-8')
+    if branch_info is None:
+        branch_info = pd.read_csv(branch_info_file, encoding='utf-8')
+    else:
+        branch_info = branch_info.copy(deep=True)
+    if bus_info is None:
+        bus_info = pd.read_csv(bus_info_file, encoding='utf-8')
+    else:
+        bus_info = bus_info.copy(deep=True)
 
     start = perf_counter()
     net = pp.create_empty_network()

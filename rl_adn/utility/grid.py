@@ -13,7 +13,10 @@ from rl_adn.utility.numbarize import (pre_power_flow_tensor,
                                       pre_power_flow_sam_sequential,
                                       power_flow_sam_sequential,
                                       power_flow_sam_sequential_constant_power_only)
-import psutil
+try:
+    import psutil
+except ImportError:
+    psutil = None
 from tqdm import trange
 
 
@@ -185,7 +188,8 @@ class GridTensor:
         threads (int): Number of threads to be used.
         """
         assert isinstance(threads, int)
-        assert threads <= psutil.cpu_count(), "Number of threads must be lower of cpu count."
+        max_threads = psutil.cpu_count() if psutil is not None else (os.cpu_count() or 1)
+        assert threads <= max_threads, "Number of threads must be lower of cpu count."
         set_num_threads(threads)
         print(f"Number of threads set to: {threads}")
 
@@ -202,15 +206,16 @@ class GridTensor:
         """
 
         self.nb = self.bus_info.shape[0]  # number of buses
-        self.nl = self.branch_info.shape[0]  # number of lines
+        active_branch_info = self.branch_info[self.branch_info.iloc[:, 5].astype(float) != 0].reset_index(drop=True)
+        self.nl = active_branch_info.shape[0]  # number of active lines
 
         sl = self.bus_info[self.bus_info['Tb'] == 1]['NODES'].tolist()  # Slack node(s)
 
-        stat = self.branch_info.iloc[:, 5]  # ones at in-service branches
-        Ys = stat / ((self.branch_info.iloc[:, 2] + 1j * self.branch_info.iloc[:, 3]) / (
+        stat = active_branch_info.iloc[:, 5]  # ones at in-service branches
+        Ys = stat / ((active_branch_info.iloc[:, 2] + 1j * active_branch_info.iloc[:, 3]) / (
                     self.v_base ** 2 * 1000 / self.s_base))  # series admittance
-        Bc = stat * self.branch_info.iloc[:, 4] * (self.v_base ** 2 * 1000 / self.s_base)  # line charging susceptance
-        tap = stat * self.branch_info.iloc[:, 6]  # default tap ratio = 1
+        Bc = stat * active_branch_info.iloc[:, 4] * (self.v_base ** 2 * 1000 / self.s_base)  # line charging susceptance
+        tap = active_branch_info.iloc[:, 6]  # default tap ratio = 1
 
         Ytt = Ys + 1j * Bc / 2
         Yff = Ytt / tap
@@ -218,8 +223,8 @@ class GridTensor:
         Ytf = Yft
 
         # build connection matrices
-        f = self.branch_info.iloc[:, 0] - 1  # list of "from" buses
-        t = self.branch_info.iloc[:, 1] - 1  # list of "to" buses
+        f = active_branch_info.iloc[:, 0].astype(int) - 1  # list of "from" buses
+        t = active_branch_info.iloc[:, 1].astype(int) - 1  # list of "to" buses
 
         # connection matrix for line & from buses
         Cf = csr_matrix((np.ones(self.nl), (range(self.nl), f)), (self.nl, self.nb))
