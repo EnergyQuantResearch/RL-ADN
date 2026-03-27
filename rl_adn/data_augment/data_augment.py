@@ -86,9 +86,7 @@ class TimeSeriesDataAugmentor:
             GaussianMultivariate = _require_gmc()
             standard_input_data = np.empty((active_power_array.shape[0], self.n_models))
             for index in range(self.n_models):
-                standard_input_data[:, index] = np.array(
-                    [self._gmm_cdf(self.gmm_models[index], value) for value in active_power_array[:, index]]
-                )
+                standard_input_data[:, index] = np.array([self._gmm_cdf(self.gmm_models[index], value) for value in active_power_array[:, index]])
             copula = GaussianMultivariate()
             copula.fit(standard_input_data)
             self.augmentation_model = copula
@@ -132,9 +130,7 @@ class TimeSeriesDataAugmentor:
             generated_pseudo_obs = self._sample_gmc(num_samples)
             transformed_samples = np.empty_like(generated_pseudo_obs)
             for index in range(self.n_models):
-                transformed_samples[:, index] = np.array(
-                    [self._inverse_gmm_cdf(self.gmm_models[index], u) for u in generated_pseudo_obs[:, index]]
-                )
+                transformed_samples[:, index] = np.array([self._inverse_gmm_cdf(self.gmm_models[index], u) for u in generated_pseudo_obs[:, index]])
             flattened_samples = transformed_samples.flatten()
         elif self.augmentation_model_name == "GMM":
             gmm_samples = np.empty((num_samples, self.n_models))
