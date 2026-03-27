@@ -11,8 +11,12 @@ import pytest
 def test_algorithm_utility_facade_exports_expected_symbols():
     from rl_adn.algorithms import utility
 
-    for name in ("Config", "ReplayBuffer", "SumTree", "build_mlp", "get_episode_return", "get_optim_param"):
-        assert hasattr(utility, name)
+    assert hasattr(utility, "Config")
+    assert set(utility.__all__) == {"Config", "ReplayBuffer", "SumTree", "build_mlp", "get_episode_return", "get_optim_param"}
+
+    if importlib.util.find_spec("torch") is not None:
+        for name in ("ReplayBuffer", "SumTree", "build_mlp", "get_episode_return", "get_optim_param"):
+            assert hasattr(utility, name)
 
 
 def test_benchmark_module_imports_without_pyomo_side_effects():

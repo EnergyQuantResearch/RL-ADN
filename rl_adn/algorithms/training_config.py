@@ -5,7 +5,6 @@ from pprint import pprint
 from typing import Any
 
 import numpy as np
-import torch
 
 
 class Config:
@@ -68,6 +67,8 @@ class Config:
         self.train = True
 
     def init_before_training(self) -> None:
+        import torch
+
         np.random.seed(self.random_seed)
         torch.manual_seed(self.random_seed)
         torch.set_num_threads(self.num_threads)
