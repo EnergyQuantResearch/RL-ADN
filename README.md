@@ -105,11 +105,17 @@ obs, info = env.reset(seed=2026)
 next_obs, reward, terminated, truncated, info = env.step(action)
 ```
 
+## Supported Examples
+
+The supported example entrypoints are the Python scripts described in `examples/README.md`.
+
+The notebooks are retained only as supplementary reference material and are no longer treated as the primary supported workflow.
+
 ## Repository Structure
 
 - `rl_adn/`: package source code
 - `tests/`: smoke and domain validation tests
-- `examples/`: script-first quickstart plus notebooks
+- `examples/`: supported scripts plus supplementary notebooks
 - `docs/`: Sphinx documentation sources
 
 ## Highlights
@@ -130,7 +136,7 @@ The library was originally released alongside the RL-ADN research paper on optim
 1. Run `examples/quickstart_env.py` for the minimal package-backed environment flow.
 2. Read the typed config surface through `rl_adn.make_env_config(...)`.
 3. Try fixed and pooled topology scenarios before moving on to GNN-based experiments.
-4. Use notebooks only as supplementary material after the script workflow is clear.
+4. Treat notebooks as archival/supplementary material after the script workflow is clear.
 
 ## Current Limits
 

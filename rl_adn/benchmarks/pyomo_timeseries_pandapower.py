@@ -1,81 +1,122 @@
-"""in this script, we consider constraints corresponding to the current multi battery environment,
-that is to say the voltage regulation only considers that constrainting the limitation connected to the nodes connected to batteries,
-Using 2020 11-6 as the example"""
+from __future__ import annotations
+
+from dataclasses import dataclass, field
+from typing import Any, Mapping
 
 import numpy as np
 import pandas as pd
-from pyomo.environ import *
-
-from rl_adn import PowerNetEnv, make_env_config
 
 
-def construct_opf_model(Vnom, Vmin, Vmax, Data_Network):
-    # Data Processing
-    battery_parameters = {
-        "capacity": 1.0,  # MW.h
-        "max_charge": 0.3,  # MW
-        "max_discharge": 0.3,  # MW
-        "efficiency": 1,
-        "degradation": 0,  # euro/kw
-        "max_soc": 0.8,
-        "min_soc": 0.2,
-        "initial_soc": 0.4,
-    }
-    TIMES = Data_Network["TIMES"]
-    NODES = Data_Network["NODES"]
-    LINES = Data_Network["LINES"]
-    Tb = Data_Network["Tb"]
-    PD = Data_Network["PD"]
-    QD = Data_Network["QD"]
-    R = Data_Network["R"]
-    X = Data_Network["X"]
-    BATTERY_NODES = Data_Network["BATTERY_NODES"]
-    # Type of Model
+def _require_pyomo():
+    try:
+        from pyomo.environ import ConcreteModel, Constraint, Objective, Param, Set, Var, minimize
+    except ImportError as exc:
+        raise ImportError("Pyomo benchmark support requires the optional dependency 'pyomo'.") from exc
+
+    return ConcreteModel, Constraint, Objective, Param, Set, Var, minimize
+
+
+@dataclass(frozen=True)
+class BatterySpec:
+    capacity_mwh: float = 1.0
+    max_charge_mw: float = 0.3
+    max_discharge_mw: float = 0.3
+    efficiency: float = 1.0
+    degradation_eur_per_kw: float = 0.0
+    max_soc: float = 0.8
+    min_soc: float = 0.2
+    initial_soc: float = 0.4
+    time_interval_minutes: float = 15.0
+
+
+@dataclass(frozen=True)
+class DispatchBenchmarkData:
+    times: tuple[int, ...]
+    nodes: tuple[int, ...]
+    lines: tuple[tuple[int, int], ...]
+    tb: dict[int, int]
+    pd: np.ndarray
+    qd: np.ndarray
+    r: dict[tuple[int, int], float]
+    x: dict[tuple[int, int], float]
+    battery_nodes: frozenset[int]
+    price: np.ndarray
+    battery: BatterySpec = field(default_factory=BatterySpec)
+
+    @classmethod
+    def from_mapping(
+        cls,
+        data_network: Mapping[str, Any],
+        *,
+        battery: BatterySpec | None = None,
+    ) -> "DispatchBenchmarkData":
+        times = tuple(data_network["TIMES"])
+        nodes = tuple(data_network["NODES"])
+        lines = tuple(data_network["LINES"])
+        tb = dict(data_network["Tb"])
+        pd_array = np.asarray(data_network["PD"], dtype=float)
+        qd_input = data_network.get("QD")
+        qd_array = np.zeros_like(pd_array) if qd_input is None else np.asarray(qd_input, dtype=float)
+        price = np.asarray(data_network["PRICE"], dtype=float)
+        if pd_array.shape[0] != len(times):
+            raise ValueError("PD must have one row per time step")
+        if qd_array.shape != pd_array.shape:
+            raise ValueError("QD must match PD shape")
+        if price.shape[0] != len(times):
+            raise ValueError("PRICE must have one value per time step")
+        return cls(
+            times=times,
+            nodes=nodes,
+            lines=lines,
+            tb=tb,
+            pd=pd_array,
+            qd=qd_array,
+            r=dict(data_network["R"]),
+            x=dict(data_network["X"]),
+            battery_nodes=frozenset(data_network["BATTERY_NODES"]),
+            price=price,
+            battery=battery or BatterySpec(),
+        )
+
+
+def construct_opf_model(v_nom: float, v_min: float, v_max: float, data_network: Mapping[str, Any] | DispatchBenchmarkData):
+    """Build the Pyomo dispatch model for ESS scheduling on a radial feeder."""
+    ConcreteModel, Constraint, Objective, Param, Set, Var, minimize = _require_pyomo()
+    data = data_network if isinstance(data_network, DispatchBenchmarkData) else DispatchBenchmarkData.from_mapping(data_network)
+
     model = ConcreteModel()
+    model.NODES = Set(initialize=data.nodes)
+    model.LINES = Set(initialize=data.lines)
+    model.TIMES = Set(initialize=data.times)
 
-    # Define Sets
-    model.NODES = Set(initialize=NODES)
-    model.LINES = Set(initialize=LINES)
-    model.TIMES = Set(initialize=TIMES)
+    model.Vnom = Param(initialize=v_nom, mutable=False)
+    model.Vmin = Param(initialize=v_min, mutable=False)
+    model.Vmax = Param(initialize=v_max, mutable=False)
+    model.Tb = Param(model.NODES, initialize=data.tb, mutable=True)
+    model.QD = Param(
+        model.TIMES,
+        model.NODES,
+        initialize=lambda _, time, node: float(data.qd[time, node]),
+        mutable=False,
+    )
+    model.R = Param(model.LINES, initialize=data.r, mutable=False)
+    model.X = Param(model.LINES, initialize=data.x, mutable=False)
+    model.battery_initial_soc = Param(default=data.battery.initial_soc)
+    model.battery_capacity = Param(default=data.battery.capacity_mwh)
+    model.battery_soc_max = Param(default=data.battery.max_soc)
+    model.battery_soc_min = Param(default=data.battery.min_soc)
+    model.battery_max_change = Param(default=data.battery.max_charge_mw)
+    model.PD = Param(
+        model.TIMES,
+        model.NODES,
+        initialize=lambda _, time, node: float(data.pd[time, node]),
+    )
+    model.RM = Param(model.LINES, initialize=lambda _, i, j: model.R[i, j])
+    model.XM = Param(model.LINES, initialize=lambda _, i, j: model.X[i, j])
 
-    # Define Parameters
-    model.Vnom = Param(initialize=Vnom, mutable=False)
-    model.Vmin = Param(initialize=Vmin, mutable=False)
-    model.Vmax = Param(initialize=Vmax, mutable=False)
-    model.Tb = Param(model.NODES, initialize=Tb, mutable=True)
-    # model.PD = Param(model.TIMES,model.NODES, initialize=0, mutable=True)  # Node demand
-    model.QD = Param(model.TIMES, model.NODES, initialize=0, mutable=True)  # Node demand
-    model.R = Param(model.LINES, initialize=R, mutable=False)  # Line resistance
-    model.X = Param(model.LINES, initialize=X, mutable=False)  # Line resistance
-    ## define parameters for battery
-    model.battery_initial_soc = Param(default=battery_parameters["initial_soc"])
-    model.battery_capacity = Param(default=battery_parameters["capacity"])
-    model.battery_soc_max = Param(default=battery_parameters["max_soc"])
-    model.battery_soc_min = Param(default=battery_parameters["min_soc"])
-    model.battery_max_change = Param(default=battery_parameters["max_charge"])
-
-    # define initialize PD
-    def PD_init_rule(model, time, node):
-        model.PD[time, node] = PD[time, node]
-        return model.PD[time, node]
-
-    model.PD = Param(model.TIMES, model.NODES, initialize=PD_init_rule)
-
-    def R_init_rule(model, i, j):
-        return model.R[i, j]
-
-    model.RM = Param(model.LINES, initialize=R_init_rule)  # Line resistance
-
-    def X_init_rule(model, i, j):
-        return model.X[i, j]
-
-    model.XM = Param(model.LINES, initialize=X_init_rule)  # Line resistance
-
-    # Define Variables
-    model.P = Var(model.TIMES, model.LINES, initialize=0)  # Acive power flowing in lines
-    model.Q = Var(model.TIMES, model.LINES, initialize=0)  # Reacive power flowing in lines
-    model.I = Var(model.TIMES, model.LINES, initialize=0)  # Current of lines
-
+    model.P = Var(model.TIMES, model.LINES, initialize=0)
+    model.Q = Var(model.TIMES, model.LINES, initialize=0)
+    model.I = Var(model.TIMES, model.LINES, initialize=0)
     model.SOC = Var(
         model.TIMES,
         model.NODES,
@@ -83,15 +124,9 @@ def construct_opf_model(Vnom, Vmin, Vmax, Data_Network):
         bounds=(model.battery_soc_min, model.battery_soc_max),
     )
 
-    # we set energy>0 is discharge, also only when no slack bus we put battery
-    def energy_change_rule(model, time, i):
-        if i not in BATTERY_NODES:
-            tem = 0.0
-            model.energy_change[time, i].fixed = True
-        else:
-            tem = 0.0
-            model.energy_change[time, i].fixed = False
-        return tem
+    def energy_change_rule(model, time, node):
+        model.energy_change[time, node].fixed = node not in data.battery_nodes
+        return 0.0
 
     model.energy_change = Var(
         model.TIMES,
@@ -100,123 +135,74 @@ def construct_opf_model(Vnom, Vmin, Vmax, Data_Network):
         bounds=(-model.battery_max_change, model.battery_max_change),
     )
 
-    def PS_init_rule(model, time, i):
-        # for time in model.TIMES:
-        if model.Tb[i].value == 0:
-            temp = 0.0
-            model.PS[time, i].fixed = True
-        else:
-            temp = 0.0
-        return temp
+    def substation_active_rule(model, time, node):
+        if model.Tb[node].value == 0:
+            model.PS[time, node].fixed = True
+        return 0.0
 
-    model.PS = Var(model.TIMES, model.NODES, initialize=PS_init_rule)  # Active power of the SS
+    def substation_reactive_rule(model, time, node):
+        if model.Tb[node].value == 0:
+            model.QS[time, node].fixed = True
+        return 0.0
 
-    def QS_init_rule(model, time, i):
-        # for time in model.TIMES:
-        if model.Tb[i].value == 0:
-            temp = 0.0
-            model.QS[time, i].fixed = True
-        else:
-            temp = 0.0
-        return temp
+    model.PS = Var(model.TIMES, model.NODES, initialize=substation_active_rule)
+    model.QS = Var(model.TIMES, model.NODES, initialize=substation_reactive_rule)
+    model.PRICE = Param(model.TIMES, initialize=lambda _, time: float(data.price[time]), mutable=False)
 
-    model.QS = Var(model.TIMES, model.NODES, initialize=QS_init_rule)  # Reactive power of the SS
+    def voltage_init(model, time, node):
+        if model.Tb[node].value == 1:
+            model.V[time, node].fixed = True
+        return model.Vnom
 
-    # price init rule
-    def PRICE_init_rule(model, time):
-        return PRICE[time]
+    model.V = Var(model.TIMES, model.NODES, initialize=voltage_init)
+    model.obj = Objective(
+        rule=lambda model: sum(
+            sum(model.PS[time, node] * model.PRICE[time] for node in model.NODES)
+            for time in model.TIMES
+        ),
+        sense=minimize,
+    )
 
-    model.PRICE = Param(model.TIMES, initialize=PRICE_init_rule, mutable=False)
-
-    # Voltage of nodes
-    def Voltage_init(model, time, i):
-        # for time in model.TIMES:
-        if model.Tb[i].value == 1:
-            temp = model.Vnom
-            model.V[time, i].fixed = True
-        else:
-            temp = model.Vnom
-            model.V[time, i].fixed = False
-        return temp
-
-    model.V = Var(model.TIMES, model.NODES, initialize=Voltage_init)
-
-    # Define Objective Function,minimize the optimal power loss. Actually, when we only have one source from the grid,
-    """Since each element of model.LINES is a tuple of two integers,
-    you will need to use two indices to access the variable indexed by model.LINES.
-    For example, if you define a variable P indexed by both model.LINES and model.TIMES,
-    you would access the value of P for the line (1,2) at time t=1 using model.P[1, (1,2)]."""
-    # def act_loss(model):
-    #     return (sum(sum(model.RM[i, j] * (model.I[time,(i, j)] ** 2) for i, j in model.LINES)for time in model.TIMES))
-
-    # here we create another objective: minimizing the imported power from external grid
-    # def min_power_ext_grid(model):
-    #
-    #     return (sum(sum(model.PS[time,node]for node in model.NODES)for time in model.TIMES))
-
-    # Update the objective function to minimize the cost of buying energy from the external grid
-    def min_cost_ext_grid(model):
-        return sum(sum(model.PS[time, node] * model.PRICE[time] for node in model.NODES) for time in model.TIMES)
-
-    model.obj = Objective(rule=min_cost_ext_grid, sense=minimize)
-
-    # Update the objective function to earn money from battery dispatch
-    # def max_benefits_dispatch_battery(model):
-    #     return sum(sum(model.energy_change[time, node] * model.PRICE[time] for node in model.NODES) for time in model.TIMES)
-    #
-    # model.obj = Objective(rule=max_benefits_dispatch_battery,sense=maximize)
-
-    # model.obj = Objective(rule=min_power_ext_grid)
-    # model.obj = Objective(rule=act_loss)
-    # we need to revise this part for adding time constraint into here.
-    # %% Define Constraints
-    # define soc update constraint
+    interval_hours = data.battery.time_interval_minutes / 60.0
 
     def soc_update_rule(model, time, node):
-        if node not in BATTERY_NODES:
+        if node not in data.battery_nodes:
             return Constraint.Skip
         if time == model.TIMES.first():
-            return (
-                model.SOC[time, node]
-                == model.battery_initial_soc - (model.energy_change[time, node] * 15.0 / 60.0) / model.battery_capacity
-            )
-        else:
-            return (
-                model.SOC[time, node]
-                == model.SOC[model.TIMES.prev(time), node]
-                - (model.energy_change[time, node] * 15.0 / 60.0) / model.battery_capacity
-            )
+            return model.SOC[time, node] == model.battery_initial_soc - (
+                model.energy_change[time, node] * interval_hours
+            ) / model.battery_capacity
+        return model.SOC[time, node] == model.SOC[model.TIMES.prev(time), node] - (
+            model.energy_change[time, node] * interval_hours
+        ) / model.battery_capacity
 
     model.constaint_soc_update = Constraint(model.TIMES, model.NODES, rule=soc_update_rule)
 
-    # for line k consumption == injection
-    def active_power_flow_rule(model, time, k):
-
+    def active_power_flow_rule(model, time, node):
         return (
-            sum(model.P[time, (j, i)] for j, i in model.LINES if i == k)
+            sum(model.P[time, (j, i)] for j, i in model.LINES if i == node)
             - sum(
-                model.P[time, (i, j)] + model.RM[i, j] * (model.I[time, (i, j)] ** 2) for i, j in model.LINES if k == i
+                model.P[time, (i, j)] + model.RM[i, j] * (model.I[time, (i, j)] ** 2)
+                for i, j in model.LINES
+                if node == i
             )
-            + model.PS[time, k]
-            + model.energy_change[time, k]
-            == model.PD[time, k]
+            + model.PS[time, node]
+            + model.energy_change[time, node]
+            == model.PD[time, node]
         )
 
-    model.active_power_flow = Constraint(model.TIMES, model.NODES, rule=active_power_flow_rule)
-
-    def reactive_power_flow_rule(model, time, k):
+    def reactive_power_flow_rule(model, time, node):
         return (
-            sum(model.Q[time, (j, i)] for j, i in model.LINES if i == k)
+            sum(model.Q[time, (j, i)] for j, i in model.LINES if i == node)
             - sum(
-                model.Q[time, (i, j)] + model.XM[i, j] * (model.I[time, (i, j)] ** 2) for i, j in model.LINES if k == i
+                model.Q[time, (i, j)] + model.XM[i, j] * (model.I[time, (i, j)] ** 2)
+                for i, j in model.LINES
+                if node == i
             )
-            + model.QS[time, k]
-            == model.QD[time, k]
+            + model.QS[time, node]
+            == model.QD[time, node]
         )
 
-    model.reactive_power_flow = Constraint(model.TIMES, model.NODES, rule=reactive_power_flow_rule)
-
-    ## role of voltage drop
     def voltage_drop_rule(model, time, i, j):
         return (
             model.V[time, i] ** 2
@@ -225,38 +211,34 @@ def construct_opf_model(Vnom, Vmin, Vmax, Data_Network):
             - model.V[time, j] ** 2
         ) == 0
 
+    def current_definition_rule(model, time, i, j):
+        return (model.I[time, (i, j)] ** 2) * (model.V[time, j] ** 2) == (
+            model.P[time, (i, j)] ** 2 + model.Q[time, (i, j)] ** 2
+        )
+
+    model.active_power_flow = Constraint(model.TIMES, model.NODES, rule=active_power_flow_rule)
+    model.reactive_power_flow = Constraint(model.TIMES, model.NODES, rule=reactive_power_flow_rule)
     model.voltage_drop = Constraint(model.TIMES, model.LINES, rule=voltage_drop_rule)
-
-    def define_current_rule(model, time, i, j):
-        return (model.I[time, (i, j)] ** 2) * (model.V[time, j] ** 2) == model.P[time, (i, j)] ** 2 + model.Q[
-            time, (i, j)
-        ] ** 2
-
-    model.define_current = Constraint(model.TIMES, model.LINES, rule=define_current_rule)
-
-    # here the current limit is over 0, representing that current can only from i to j, instead of versa.
-    # we change this step and try to calculate it according to the result three phase one
-
-    def current_limit_rule(model, time, i, j):
-        return (0, model.I[time, (i, j)], None)
-
-    # if we cancel this, then things to error
-    model.current_limit = Constraint(model.TIMES, model.LINES, rule=current_limit_rule)
-
-    def voltage_limit_rule(model, time, i):
-        if i in BATTERY_NODES:
-            return (model.Vmin, model.V[time, i], model.Vmax)
-        return Constraint.Skip
-
-    model.voltage_limit = Constraint(model.TIMES, model.NODES, rule=voltage_limit_rule)
-
+    model.define_current = Constraint(model.TIMES, model.LINES, rule=current_definition_rule)
+    model.current_limit = Constraint(model.TIMES, model.LINES, rule=lambda model, time, i, j: (0, model.I[time, (i, j)], None))
+    model.voltage_limit = Constraint(
+        model.TIMES,
+        model.NODES,
+        rule=lambda model, time, node: (model.Vmin, model.V[time, node], model.Vmax)
+        if node in data.battery_nodes
+        else Constraint.Skip,
+    )
     return model
 
 
-def convert_dict_to_pd(data: dict):
-    df = pd.DataFrame(columns=list(set([k[1] for k in data.keys()])))
-    for key, value in data.items():
-        df.loc[key[0], key[1]] = value
-    # df=df.iloc[:,1:]
-    # df=df.drop(df.columns[0],axis=1)
-    return df
+def convert_indexed_values_to_frame(data: Mapping[tuple[int, int], Any]) -> pd.DataFrame:
+    columns = sorted({key[1] for key in data})
+    frame = pd.DataFrame(columns=columns)
+    for (row_index, column_index), value in data.items():
+        frame.loc[row_index, column_index] = value
+    return frame.sort_index().sort_index(axis=1)
+
+
+def convert_dict_to_pd(data: Mapping[tuple[int, int], Any]) -> pd.DataFrame:
+    """Legacy alias for ``convert_indexed_values_to_frame``."""
+    return convert_indexed_values_to_frame(data)

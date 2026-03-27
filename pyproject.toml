@@ -98,3 +98,4 @@ indent-style = "space"
 
 [tool.ruff.lint.per-file-ignores]
 "tests/*_node_network_powerflow_test.py" = ["E402"]
+"rl_adn/algorithms/utility.py" = ["F822"]

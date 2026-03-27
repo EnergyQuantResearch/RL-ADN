@@ -1,263 +1,190 @@
+from __future__ import annotations
+
 import re
-from datetime import timedelta
+from datetime import datetime, timedelta
+from pathlib import Path
+from typing import Literal
 
 import numpy as np
 import pandas as pd
-from copulas.multivariate import GaussianMultivariate
-from multicopula import EllipticalCopula
 from scipy.optimize import brentq
 from scipy.stats import norm
-from sklearn.mixture import GaussianMixture
 
 from rl_adn.data import GeneralPowerDataManager
 
+AugmentationMethod = Literal["GMC", "GMM", "TC"]
+
+
+def _require_gmm():
+    try:
+        from sklearn.mixture import GaussianMixture
+    except ImportError as exc:
+        raise ImportError("GMM-based data augmentation requires the optional dependency 'scikit-learn'.") from exc
+    return GaussianMixture
+
+
+def _require_gmc():
+    try:
+        from copulas.multivariate import GaussianMultivariate
+    except ImportError as exc:
+        raise ImportError("GMC-based data augmentation requires the optional dependency 'copulas'.") from exc
+    return GaussianMultivariate
+
+
+def _require_tc():
+    try:
+        from multicopula import EllipticalCopula
+    except ImportError as exc:
+        raise ImportError("TC-based data augmentation requires the optional dependency 'multicopula'.") from exc
+    return EllipticalCopula
+
 
 class ActivePowerDataManager(GeneralPowerDataManager):
-    """
-    A subclass of GeneralPowerDataManager that adds a method for retrieving
-    active power data specifically.
-    """
-
-    def __init__(self, datapath: str) -> None:
-        """
-        Initialize the ActivePowerDataManager object with the path to the data file.
-        """
-        if not datapath:
-            raise ValueError("Please input the correct datapath")
-
-        self.df = pd.read_csv(datapath, index_col="date_time")
-        self.df.index = pd.to_datetime(self.df.index)
-
-        # Assuming the data interval is consistent throughout the dataset
-        self.time_interval = int((self.df.index[1] - self.df.index[0]).seconds / 60)
-        print(f"Data time interval: {self.time_interval} minutes")
+    """Specialized data manager for active-power augmentation workflows."""
 
     def get_active_power_data(self) -> np.ndarray:
-        """
-        Retrieve and preprocess active power data from the dataset.
-        """
-        self.df.interpolate(method="linear", inplace=True)
-        self.df["day"] = self.df.index.date
-        self.df["time"] = self.df.index.time
+        if not self.active_power_cols:
+            raise ValueError("No active power columns were found in the dataset")
 
-        count_per_day = self.df.groupby("day").size()
-        expected_time_steps = 24 * 60 / self.time_interval
-        days_with_extra_steps = count_per_day[count_per_day > expected_time_steps]
+        active_power_df = self.df[self.active_power_cols].copy()
+        active_power_df["day"] = self.df.index.normalize()
+        active_power_df["time"] = self.df.index.time
 
-        if not days_with_extra_steps.empty:
-            self.df = self.df[~self.df["day"].isin(days_with_extra_steps.index)]
+        expected_time_steps = int(24 * 60 / self.time_interval)
+        complete_days = active_power_df.groupby("day").size()
+        complete_days = complete_days[complete_days == expected_time_steps].index
+        active_power_df = active_power_df[active_power_df["day"].isin(complete_days)]
+        if active_power_df.empty:
+            raise ValueError("No complete days were found for active-power augmentation")
 
-        active_power_columns = [col for col in self.df.columns if re.fullmatch(r"active_power(_\w+)?", col)]
-        active_power_df = self.df[active_power_columns].copy()
-        active_power_df["day"] = self.df["day"]
-        active_power_df["time"] = self.df["time"]
-
-        reshaped_active_power_df = active_power_df.set_index(["day", "time"]).stack().reset_index().rename(columns={"level_2": "node", 0: "value"})
-
-        grouped_active_power_df = reshaped_active_power_df.groupby("time")["value"].apply(list).reset_index()
-
-        reshaped_df = pd.DataFrame(grouped_active_power_df["value"].tolist(), index=grouped_active_power_df["time"])
-
-        active_power_array = reshaped_df.to_numpy().T
+        reshaped = active_power_df.set_index(["day", "time"]).stack().unstack("time")
+        active_power_array = reshaped.to_numpy(dtype=float)
         active_power_array = active_power_array[~np.isnan(active_power_array).any(axis=1)]
-
+        if active_power_array.size == 0:
+            raise ValueError("Active power data contains only NaN values after reshaping")
         return active_power_array
 
 
 class TimeSeriesDataAugmentor:
-    def __init__(self, data, augmentation_model_name="GMC"):
-        """
-        Initialize the data augmentor with a data manager instance and the selected augmentation model.
-        Additional parameters can be set here if required.
-        """
+    """Generate synthetic active-power time series using copula or GMM methods."""
+
+    def __init__(self, data: ActivePowerDataManager, augmentation_model_name: AugmentationMethod = "GMC"):
         self.data = data
         self.augmentation_model_name = augmentation_model_name
         self.augmentation_model = None
+        self.n_models = int(24.0 * 60.0 / self.data.time_interval)
+        self.gmm_models = []
+        self._create_augmentation_model()
 
-        self._create_augmentation_model()  # Create the augmentation model upon initialization
+    def _create_augmentation_model(self) -> None:
+        active_power_array = self.data.get_active_power_data()
+        GaussianMixture = _require_gmm()
+        best_components = [self._bic_value(active_power_array[:, i].reshape(-1, 1), 20, GaussianMixture) for i in range(self.n_models)]
+        self.gmm_models = [GaussianMixture(n_components=count).fit(active_power_array[:, i].reshape(-1, 1)) for i, count in enumerate(best_components)]
 
-    def _create_augmentation_model(self):
-        """
-        Private method to create the augmentation model based on the chosen method, e.g., GMC.
-        GMC: Data augmentation using Gaussian Mixture Copulas
-        GMM: Data augmentaiton using Gaussian Mixture models
-        TC: Data augmentaiton using T Copulas
-        """
         if self.augmentation_model_name == "GMC":
-            # Extract data from the data manager
-            active_power_array = self.data.get_active_power_data()
-
-            # Determine the best number of components for each GMM model, for one day now it is 96 time steps
-            self.n_models = int(24.0 * 60.0 / self.data.time_interval)
-
-            # print(f'data manager time interval {self.data.time_interval}')
-            best_components = [self._bic_value(active_power_array[:, i].reshape(-1, 1), 20) for i in range(self.n_models)]
-
-            # Fit the GMM models
-            self.gmm_models = [GaussianMixture(n_components=bc).fit(active_power_array[:, i].reshape(-1, 1)) for i, bc in enumerate(best_components)]
-
-            # Transform the data to standard format for copula fitting
-            std_input_data = np.empty((active_power_array.shape[0], self.n_models))
-            for i in range(self.n_models):
-                std_input_data[:, i] = np.array([self._gmm_cdf(self.gmm_models[i], x) for x in active_power_array[:, i]]).reshape(1, -1)
-            self.copula = GaussianMultivariate()
-            self.copula.fit(std_input_data)
-
-            # Assign the copula as the augmentation model
-            self.augmentation_model = self.copula
-
-        if self.augmentation_model_name == "GMM":
-            active_power_array = self.data.get_active_power_data()
-
-            # Determine the best number of components for each GMM model, for one day now it is 96 time steps
-            self.n_models = int(24.0 * 60.0 / self.data.time_interval)
-
-            # print(f'data manager time interval {self.data.time_interval}')
-            best_components = [self._bic_value(active_power_array[:, i].reshape(-1, 1), 20) for i in range(self.n_models)]
-
-            # Fit the GMM models
-            self.gmm_models = [GaussianMixture(n_components=bc).fit(active_power_array[:, i].reshape(-1, 1)) for i, bc in enumerate(best_components)]
-
+            GaussianMultivariate = _require_gmc()
+            standard_input_data = np.empty((active_power_array.shape[0], self.n_models))
+            for index in range(self.n_models):
+                standard_input_data[:, index] = np.array([self._gmm_cdf(self.gmm_models[index], value) for value in active_power_array[:, index]])
+            copula = GaussianMultivariate()
+            copula.fit(standard_input_data)
+            self.augmentation_model = copula
+        elif self.augmentation_model_name == "GMM":
             self.augmentation_model = self.gmm_models
+        elif self.augmentation_model_name == "TC":
+            EllipticalCopula = _require_tc()
+            tc_model = EllipticalCopula(active_power_array.T)
+            tc_model.fit()
+            self.augmentation_model = tc_model
+        else:
+            raise ValueError(f"Unsupported augmentation_model_name: {self.augmentation_model_name}")
 
-        if self.augmentation_model_name == "TC":
-            active_power_array = self.data.get_active_power_data()
-            self.n_models = int(24.0 * 60.0 / self.data.time_interval)
+    def _gmm_cdf(self, gmm, value: float) -> float:
+        cdf = 0.0
+        for component in range(gmm.n_components):
+            cdf += gmm.weights_[component] * norm.cdf(
+                value,
+                gmm.means_[component, 0],
+                np.sqrt(gmm.covariances_[component, 0]),
+            )
+        return float(cdf)
 
-            self.tc_model = EllipticalCopula(active_power_array.T)
-            self.tc_model.fit()
-            self.augmentation_model = self.tc_model
-
-    def _gmm_cdf(self, gmm, x):
-        """
-        Convert CDF to pseudo-observations in the interval [0, 1].
-        """
-        cdf = 0
-        for n in range(gmm.n_components):
-            cdf += gmm.weights_[n] * norm.cdf(x, gmm.means_[n, 0], np.sqrt(gmm.covariances_[n, 0]))
-        return cdf
-
-    def _inverse_gmm_cdf(self, gmm, percentile):
-        """
-        Find the inverse of the CDF for a given percentile using a GMM model.
-        """
-
-        def f(x):
+    def _inverse_gmm_cdf(self, gmm, percentile: float) -> float:
+        def root_fn(x: float) -> float:
             return self._gmm_cdf(gmm, x) - percentile
 
-        return brentq(f, -3000, 3000)
+        return float(brentq(root_fn, -3000, 3000))
 
-    def _bic_value(self, data, n_components_range):
-        """
-        Compute BIC value for different numbers of components to determine the best model.
-        """
+    @staticmethod
+    def _bic_value(data: np.ndarray, n_components_range: int, gaussian_mixture_cls) -> int:
         bic_values = []
         for n_components in range(1, n_components_range):
-            gmm = GaussianMixture(n_components=n_components).fit(data)
+            gmm = gaussian_mixture_cls(n_components=n_components).fit(data)
             bic_values.append(gmm.bic(data))
-        best_component = np.argmin(bic_values) + 1
-        return best_component
+        return int(np.argmin(bic_values) + 1)
 
-    def check_data_format(self):
-        """
-        Verify that the data matches the expected format for augmentation.
-        """
-        # Implementation details to verify data format
-
-    def augment_data(self, num_nodes, num_days, start_date):
-        """
-        Perform data augmentation using the specified model and parameters.
-        """
+    def augment_data(self, num_nodes: int, num_days: int, start_date: datetime) -> pd.DataFrame:
+        num_samples = num_days * num_nodes
         if self.augmentation_model_name == "GMC":
-            num_samples = num_days * num_nodes
-            print("The number of samples is", num_samples)
-
-            generated_pesudo_obs = np.empty((0, self.n_models))
-            count = 0
-            while True:
-                # print('days is generated in sample', count)
-                gen_one_sample = np.array(self.copula.sample(1))
-                if gen_one_sample.min() > 0 and gen_one_sample.max() < 1:
-                    count += 1
-                    generated_pesudo_obs = np.vstack((gen_one_sample, generated_pesudo_obs))
-                    if count == num_samples:
-                        break
-            # print(' the pesudo data is now sampled and next process is to transfer it to the realistic data')
-            tran_samples = np.empty((generated_pesudo_obs.shape[0], generated_pesudo_obs.shape[1]))
-            for i in range(self.n_models):
-                tran_samples[:, i] = np.array([self._inverse_gmm_cdf(self.gmm_models[i], u) for u in generated_pesudo_obs[:, i]])
-                print(f"the {i} model columns now is calculated")
-            tran_samples = tran_samples.flatten()
-
-        if self.augmentation_model_name == "GMM":
-            num_samples = num_days * num_nodes
-            print("The number of samples is", num_samples)
-
-            # generating the data
+            generated_pseudo_obs = self._sample_gmc(num_samples)
+            transformed_samples = np.empty_like(generated_pseudo_obs)
+            for index in range(self.n_models):
+                transformed_samples[:, index] = np.array([self._inverse_gmm_cdf(self.gmm_models[index], u) for u in generated_pseudo_obs[:, index]])
+            flattened_samples = transformed_samples.flatten()
+        elif self.augmentation_model_name == "GMM":
             gmm_samples = np.empty((num_samples, self.n_models))
-            for i in range(self.n_models):
-                gmm_samples[:, i] = self.gmm_models[i].sample(num_samples)[0].reshape(-1)
+            for index in range(self.n_models):
+                gmm_samples[:, index] = self.gmm_models[index].sample(num_samples)[0].reshape(-1)
+            flattened_samples = gmm_samples.flatten()
+        elif self.augmentation_model_name == "TC":
+            tc_samples = self._sample_tc(num_samples)
+            flattened_samples = tc_samples.flatten()
+        else:
+            raise ValueError(f"Unsupported augmentation_model_name: {self.augmentation_model_name}")
 
-            tran_samples = gmm_samples.flatten()
-
-        if self.augmentation_model_name == "TC":
-            num_samples = num_days * num_nodes
-            print("The number of samples is", num_samples)
-
-            # generating the data
-            TC_samples = np.empty((0, self.n_models))
-            count = 0
-            while True:
-                gen_one_sample = np.array(self.tc_model.sample(1)).reshape(1, -1)
-
-                # cancel inf
-                if not np.isinf(gen_one_sample).any():
-                    count += 1
-                    # print(count,num_samples)
-                    TC_samples = np.vstack((gen_one_sample, TC_samples))
-                    if count == num_samples:
-                        break
-            tran_samples = TC_samples.flatten()
-
-        # Initialize lists to hold timestamps and node indices
         timestamps = []
         node_index = []
+        time_step = timedelta(minutes=self.data.time_interval)
+        for day_offset in range(num_days):
+            for node_id in range(1, num_nodes + 1):
+                timestamps.extend([start_date + timedelta(days=day_offset) + slot * time_step for slot in range(self.n_models)])
+                node_index.extend([f"active_power_node_{node_id}" for _ in range(self.n_models)])
 
-        # Populate timestamps and node_index for each day and each node
-
-        for day in range(num_days):
-            for node in range(1, num_nodes + 1):
-                time_step = timedelta(minutes=self.data.time_interval)
-                timestamps.extend([start_date + timedelta(days=day) + i * time_step for i in range(self.n_models)])
-                node_index.extend([f"active_power_node_{node}" for _ in range(self.n_models)])
-
-        # Create DataFrame
-        synthetic_data_df = pd.DataFrame({"date_time": timestamps, "node": node_index, "value": tran_samples})
-
-        # Pivot the DataFrame to get it into the desired format
+        synthetic_data_df = pd.DataFrame({"date_time": timestamps, "node": node_index, "value": flattened_samples})
         augmented_df = synthetic_data_df.pivot(index="date_time", columns="node", values="value").reset_index()
-        # Reorder the columns based on we need
-        active_power_cols = self.sort_columns(augmented_df.columns, r"active_power(_\w+)?")
-        reactive_power_cols = self.sort_columns(augmented_df.columns, r"reactive_power(_\w+)?")
-        renewable_active_power_cols = self.sort_columns(augmented_df.columns, r"renewable_active_power(_\w+)?")
-        renewable_reactive_power_cols = self.sort_columns(augmented_df.columns, r"renewable_reactive_power(_\w+)?")
-        price_cols = self.sort_columns(augmented_df.columns, r"price(_\w+)?")
-        # Combine columns in the specified order
-        ordered_columns = ["date_time"] + active_power_cols + reactive_power_cols + renewable_active_power_cols + renewable_reactive_power_cols + price_cols
-        ordered_augmented_df = augmented_df[ordered_columns]
+        ordered_columns = ["date_time"] + self.sort_columns(augmented_df.columns, r"active_power(_\w+)?")
+        return augmented_df[ordered_columns]
 
-        return ordered_augmented_df
+    def _sample_gmc(self, sample_count: int) -> np.ndarray:
+        generated_pseudo_obs = np.empty((0, self.n_models))
+        while generated_pseudo_obs.shape[0] < sample_count:
+            sampled = np.array(self.augmentation_model.sample(1))
+            if sampled.min() > 0 and sampled.max() < 1:
+                generated_pseudo_obs = np.vstack((sampled, generated_pseudo_obs))
+        return generated_pseudo_obs[:sample_count]
 
-    def save_augmented_data(self, augmented_df, file_name):
-        augmented_df.to_csv(file_name, index=False)
-        print("The data file is stored:", file_name)
+    def _sample_tc(self, sample_count: int) -> np.ndarray:
+        tc_samples = np.empty((0, self.n_models))
+        while tc_samples.shape[0] < sample_count:
+            sampled = np.array(self.augmentation_model.sample(1)).reshape(1, -1)
+            if not np.isinf(sampled).any():
+                tc_samples = np.vstack((sampled, tc_samples))
+        return tc_samples[:sample_count]
 
-    def sort_columns(self, columns, pattern):
-        def sort_key(col_name):
-            parts = col_name.split("_")
+    @staticmethod
+    def save_augmented_data(augmented_df: pd.DataFrame, file_name: str | Path) -> Path:
+        output_path = Path(file_name)
+        augmented_df.to_csv(output_path, index=False)
+        return output_path
+
+    @staticmethod
+    def sort_columns(columns, pattern: str):
+        def sort_key(column_name: str) -> int:
+            parts = column_name.split("_")
             if parts[-1].isdigit():
                 return int(parts[-1])
-            return 0  # Default sort value for non-numeric endings
+            return 0
 
-        filtered_cols = [col for col in columns if re.fullmatch(pattern, col)]
+        filtered_cols = [column for column in columns if re.fullmatch(pattern, column)]
         return sorted(filtered_cols, key=sort_key)
