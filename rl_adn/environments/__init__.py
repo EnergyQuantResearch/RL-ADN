@@ -1,25 +1,25 @@
-"""Stable environment exports for RL-ADN."""
+"""Environment-facing exports for RL-ADN."""
 
 from importlib import import_module
 
 __all__ = [
     "Battery",
-    "battery_parameters",
+    "ObservationSnapshot",
     "PowerNetEnv",
-    "env_config",
-    "make_env_config",
+    "RewardBreakdown",
+    "StateScaler",
 ]
 
 _LAZY_EXPORTS = {
     "Battery": ("rl_adn.environments.battery", "Battery"),
-    "battery_parameters": ("rl_adn.environments.battery", "battery_parameters"),
+    "ObservationSnapshot": ("rl_adn.environments.observation", "ObservationSnapshot"),
     "PowerNetEnv": ("rl_adn.environments.env", "PowerNetEnv"),
-    "env_config": ("rl_adn.environments.config", "env_config"),
-    "make_env_config": ("rl_adn.environments.config", "make_env_config"),
+    "RewardBreakdown": ("rl_adn.environments.reward", "RewardBreakdown"),
+    "StateScaler": ("rl_adn.environments.observation", "StateScaler"),
 }
 
 
-def __getattr__(name):
+def __getattr__(name: str):
     if name not in _LAZY_EXPORTS:
         raise AttributeError(f"module 'rl_adn.environments' has no attribute {name!r}")
 

@@ -1,7 +1,6 @@
 from dataclasses import dataclass
 from typing import Dict, List, Sequence, Tuple
 
-
 Edge = Tuple[int, int]
 Rewire = Tuple[Edge, Edge]
 

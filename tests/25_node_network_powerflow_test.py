@@ -1,33 +1,55 @@
 import os
 import time
+
 import numpy as np
 import pytest
 
 pp = pytest.importorskip("pandapower")
 pytestmark = pytest.mark.powerflow
 
-from rl_adn.utility.grid import GridTensor
-from rl_adn.utility.utils import create_pandapower_net
+from rl_adn.network.grid import GridTensor
+from rl_adn.network.utils import create_pandapower_net
 
-
-ROOT_DIR = os.path.abspath(os.path.join(os.path.dirname(__file__), '../rl_adn', 'data_sources'))
+ROOT_DIR = os.path.abspath(os.path.join(os.path.dirname(__file__), "../rl_adn", "data_sources"))
 CONFIG = {
-    'branch_info_file': os.path.join(ROOT_DIR, 'network_data/node_25', 'Lines_25.csv'),
-    'bus_info_file': os.path.join(ROOT_DIR, 'network_data/node_25', 'Nodes_25.csv'),
-    'vm_pu': 1.0,
-    's_base': 1000,
+    "branch_info_file": os.path.join(ROOT_DIR, "network_data/node_25", "Lines_25.csv"),
+    "bus_info_file": os.path.join(ROOT_DIR, "network_data/node_25", "Nodes_25.csv"),
+    "vm_pu": 1.0,
+    "s_base": 1000,
 }
 
-P_FILE = np.array([
-    387.09, 0., 387.09, 387.09, 0., 0., 387.09, 387.09,
-    0., 387.09, 230.571, 121.176, 121.176, 121.176, 22.7205, 387.09,
-    387.09, 387.09, 387.09, 387.09, 387.09, 387.09, 387.09, 387.09,
-])
+P_FILE = np.array(
+    [
+        387.09,
+        0.0,
+        387.09,
+        387.09,
+        0.0,
+        0.0,
+        387.09,
+        387.09,
+        0.0,
+        387.09,
+        230.571,
+        121.176,
+        121.176,
+        121.176,
+        22.7205,
+        387.09,
+        387.09,
+        387.09,
+        387.09,
+        387.09,
+        387.09,
+        387.09,
+        387.09,
+        387.09,
+    ]
+)
 
 
 def _run_powerflow(config, p_file):
-    network = GridTensor(node_file_path=config['bus_info_file'],
-                         lines_file_path=config['branch_info_file'])
+    network = GridTensor(node_file_path=config["bus_info_file"], lines_file_path=config["branch_info_file"])
     network.Q_file = np.zeros(len(p_file))
 
     start_laurent = time.time()
