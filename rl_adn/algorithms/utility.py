@@ -629,7 +629,7 @@ def get_episode_return(env, act, device):
 
     violation_value = 0.0
 
-    for i in range(96):
+    for i in range(env.episode_length):
         s_tensor = torch.as_tensor((state,), device=device, dtype=torch.float)
         a_tensor = act(s_tensor)
 

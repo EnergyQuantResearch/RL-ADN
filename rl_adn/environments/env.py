@@ -148,7 +148,8 @@ class PowerNetEnv(gym.Env[np.ndarray, np.ndarray]):
 
         if truncated:
             self._episode_done = True
-            return self.current_observation.normalized_state.copy(), reward_breakdown.total, terminated, True, info
+            terminal_observation = self._build_observation(self.current_slot_features, post_control_snapshot)
+            return terminal_observation.normalized_state.copy(), reward_breakdown.total, terminated, True, info
 
         self.current_time += 1
         self.current_observation, self.current_slot_features, self.current_precontrol_snapshot = self._observe_current_slot()
@@ -247,16 +248,23 @@ class PowerNetEnv(gym.Env[np.ndarray, np.ndarray]):
         slot_features = self._extract_slot_features(self.current_time)
         net_load_kw = slot_features.active_power_kw - slot_features.renewable_active_power_kw
         precontrol_snapshot = self.solver.observe(net_load_kw)
+        observation = self._build_observation(slot_features, precontrol_snapshot)
+        return observation, slot_features, precontrol_snapshot
+
+    def _build_observation(
+        self,
+        slot_features: SlotFeatures,
+        power_flow_snapshot: PowerFlowSnapshot,
+    ) -> ObservationSnapshot:
         battery_soc = np.array([self.batteries[node_index].SOC() for node_index in self.battery_nodes], dtype=np.float32)
-        observation = build_default_state(
+        return build_default_state(
             slot_features=slot_features,
             battery_soc=battery_soc,
             current_time=self.current_time,
-            node_voltages_pu=precontrol_snapshot.node_voltages_pu,
+            node_voltages_pu=power_flow_snapshot.node_voltages_pu,
             battery_nodes=self.battery_nodes,
             scaler=self.state_scaler,
         )
-        return observation, slot_features, precontrol_snapshot
 
     def _build_info(
         self,

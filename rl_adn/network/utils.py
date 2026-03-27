@@ -460,8 +460,3 @@ def test_plot_pandapower_net(net):
     """Simple wrapper to plot a pandapower network."""
     print("Plotting pandapower network...")
     plot_pandapower_net(net)
-
-
-if __name__ == "__main__":
-    test_net = test_create_pandapower_net()
-    test_plot_pandapower_net(test_net)

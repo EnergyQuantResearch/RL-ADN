@@ -1,5 +1,5 @@
 import re
-from datetime import datetime, timedelta
+from datetime import timedelta
 
 import numpy as np
 import pandas as pd
@@ -261,26 +261,3 @@ class TimeSeriesDataAugmentor:
 
         filtered_cols = [col for col in columns if re.fullmatch(pattern, col)]
         return sorted(filtered_cols, key=sort_key)
-
-
-if __name__ == "__main__":
-    input_data_file = "test_original_data.csv"  # Replace with your actual file path
-    augmentation_model_name = "GMM"
-    num_nodes = 3  # For examples, if you have 34 nodes
-    num_days = 3  # Assuming you want to generate data for a full year
-
-    # Initialize the data manager with the input CSV file
-    data = ActivePowerDataManager(input_data_file)
-
-    # Initialize the TimeSeriesDataAugmentor with the data manager and model name
-    augmentor = TimeSeriesDataAugmentor(data, augmentation_model_name)
-
-    # Generate augmented data
-    augmented_df = augmentor.augment_data(num_nodes, num_days, start_date=datetime(2021, 1, 1, 0, 0))
-
-    # Define the file name where to save the augmented data
-
-    # Save the augmented data to a CSV file
-    augmentor.save_augmented_data(augmented_df, "test_generated_data.csv")
-
-    print("Data augmentation completed and saved to file.")
