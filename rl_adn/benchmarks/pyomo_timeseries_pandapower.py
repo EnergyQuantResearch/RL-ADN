@@ -142,9 +142,9 @@ def construct_opf_model(Vnom, Vmin, Vmax, Data_Network):
     model.V = Var(model.TIMES, model.NODES, initialize=Voltage_init)
 
     # Define Objective Function,minimize the optimal power loss. Actually, when we only have one source from the grid,
-    """Since each element of model.LINES is a tuple of two integers, 
-    you will need to use two indices to access the variable indexed by model.LINES. 
-    For example, if you define a variable P indexed by both model.LINES and model.TIMES, 
+    """Since each element of model.LINES is a tuple of two integers,
+    you will need to use two indices to access the variable indexed by model.LINES.
+    For example, if you define a variable P indexed by both model.LINES and model.TIMES,
     you would access the value of P for the line (1,2) at time t=1 using model.P[1, (1,2)]."""
     # def act_loss(model):
     #     return (sum(sum(model.RM[i, j] * (model.I[time,(i, j)] ** 2) for i, j in model.LINES)for time in model.TIMES))
