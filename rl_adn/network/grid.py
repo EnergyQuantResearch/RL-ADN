@@ -80,29 +80,27 @@ class GridTensor:
         self._make_y_bus()
         self._compute_alphas()
         self.v_0 = None
-        self._F_ = None
-        self._W_ = None
+        self.tensor_factor_matrix = None
+        self.tensor_bias_vector = None
 
-        # Placeholder for the methods that are pre-compiled with numba.
-        self._power_flow_tensor_constant_power = None
-        self._pre_power_flow_tensor = None
-        self._power_flow_tensor = None
-
-        self._pre_power_flow_sam_sequential = None
-        self._power_flow_sam_sequential = None
-        self._power_flow_sam_sequential_constant_power_only = None
+        # Runtime-selected numerical kernels.
+        self._constant_power_tensor_solver = None
+        self._tensor_prefactor_builder = None
+        self._tensor_solver = None
+        self._sam_prefactor_builder = None
+        self._sam_solver = None
+        self._sam_constant_power_solver = None
 
         self.is_numba_enabled = False
 
         if np.all(self.alpha_P) and not np.any(self.alpha_Z) and not np.any(self.alpha_I):
-            self.constant_power_only = True
-            self.start_time_pre_pf_tensor_constant_power_only = perf_counter()
-
-            self._K_ = -inv(self.Ydd_sparse).toarray()
-            self._L_ = self._K_ @ self.Yds  # Reduced version of _W_
-            self.end_time_pre_pf_tensor_constant_power_only = perf_counter()
+            self.uses_constant_power_model = True
+            self.constant_power_prefactor_start_time = perf_counter()
+            self.constant_power_kernel = -inv(self.Ydd_sparse).toarray()
+            self.constant_power_slack_projection = self.constant_power_kernel @ self.Yds
+            self.constant_power_prefactor_end_time = perf_counter()
         else:
-            self.constant_power_only = False
+            self.uses_constant_power_model = False
 
         if numba:
             self.enable_numba()
@@ -114,27 +112,28 @@ class GridTensor:
 
     def enable_numba(self):
         """
-        Disables Numba JIT compilation, reverting to standard Python execution.
+        Enable Numba-backed kernels for the available solver paths.
         """
         parallel = True
 
-        self._power_flow_tensor_constant_power = power_flow_tensor_constant_power
-        self._pre_power_flow_tensor = njit(pre_power_flow_tensor, parallel=parallel)
-        self._power_flow_tensor = njit(power_flow_tensor, parallel=parallel)
+        self._constant_power_tensor_solver = power_flow_tensor_constant_power
+        self._tensor_prefactor_builder = njit(pre_power_flow_tensor, parallel=parallel)
+        self._tensor_solver = njit(power_flow_tensor, parallel=parallel)
 
-        self._pre_power_flow_sam_sequential = njit(pre_power_flow_sam_sequential, parallel=parallel)
-        self._power_flow_sam_sequential = njit(power_flow_sam_sequential, parallel=parallel)
-        self._power_flow_sam_sequential_constant_power_only = njit(power_flow_sam_sequential_constant_power_only, parallel=parallel)
+        self._sam_prefactor_builder = njit(pre_power_flow_sam_sequential, parallel=parallel)
+        self._sam_solver = njit(power_flow_sam_sequential, parallel=parallel)
+        self._sam_constant_power_solver = njit(power_flow_sam_sequential_constant_power_only, parallel=parallel)
 
     def disable_numba(self):
+        """Fall back to the pure-Python numerical kernels."""
 
-        self._power_flow_tensor_constant_power = power_flow_tensor_constant_power
-        self._pre_power_flow_tensor = pre_power_flow_tensor
-        self._power_flow_tensor = power_flow_tensor
+        self._constant_power_tensor_solver = power_flow_tensor_constant_power
+        self._tensor_prefactor_builder = pre_power_flow_tensor
+        self._tensor_solver = power_flow_tensor
 
-        self._pre_power_flow_sam_sequential = pre_power_flow_sam_sequential
-        self._power_flow_sam_sequential = power_flow_sam_sequential
-        self._power_flow_sam_sequential_constant_power_only = power_flow_sam_sequential_constant_power_only
+        self._sam_prefactor_builder = pre_power_flow_sam_sequential
+        self._sam_solver = power_flow_sam_sequential
+        self._sam_constant_power_solver = power_flow_sam_sequential_constant_power_only
 
     @classmethod
     def generate_from_graph(cls, *, nodes=100, child=2, plot_graph=True, load_factor=2, line_factor=3, **kwargs):
@@ -244,7 +243,10 @@ class GridTensor:
 
     def _compute_alphas(self):
         """
-        Computes alpha values for different load types in the grid. Assume P-1 and Z,I=0
+        Initialize ZIP load coefficients.
+
+        RL-ADN currently operates on the constant-power path, so the coefficients are
+        set to `P=1, I=0, Z=0`.
         """
         self.alpha_P = 1
         self.alpha_I = 0
@@ -415,16 +417,8 @@ class GridTensor:
         Run a power-flow solve for the provided active/reactive power inputs.
 
         The method accepts either batched tensors or a single-step vector and dispatches
-        to the selected solver implementation.
-                        "time_algorithm": Total time algorithm. time_algorithm = time_pre_pf + time_pf
-                        "iterations": Total number of iterations to converge.
-
-                        "convergence": Boolean indicating: True: Algorithm converged, False: it didn't.
-                        "iterations_log": NOT USED.
-                        "time_pre_pf_log": NOT USED.
-                        "time_pf_log": NOT USED.
-                        "convergence_log": NOT USED.
-                        }
+        to the selected solver implementation. It returns a dictionary containing the
+        complex voltage solution, timing statistics, and convergence metadata.
         """
 
         is_tensor = False
@@ -507,7 +501,6 @@ class GridTensor:
         n_steps = S_nom.shape[0]
         n_nodes = S_nom.shape[1]
 
-        self._power_flow_tensor_solver = self._power_flow_tensor_constant_power
         DIMENSION_BOUND = 500 * 100_000
 
         idx = self._compute_chunks(DIMENSION_BOUND, n_nodes=n_nodes, n_steps=n_steps)
@@ -525,19 +518,19 @@ class GridTensor:
 
             S_chunk = S_nom[idx[ii] : idx[ii + 1]]
 
-            if self.constant_power_only:
-                start_time_pre_pf = self.start_time_pre_pf_tensor_constant_power_only
+            if self.uses_constant_power_model:
+                start_time_pre_pf = self.constant_power_prefactor_start_time
                 # No pre-computing (Already done when creating the object)
-                end_time_pre_pf = self.end_time_pre_pf_tensor_constant_power_only
+                end_time_pre_pf = self.constant_power_prefactor_end_time
 
                 start_time_pf = perf_counter()
-                self.v_0, t_iterations = self._power_flow_tensor_solver(
-                    K=self._K_,
-                    L=self._L_,
-                    S=S_chunk,
-                    v0=self.v_0,
-                    ts=ts_chunk,
-                    nb=self.nb,
+                self.v_0, t_iterations = self._constant_power_tensor_solver(
+                    kernel_matrix=self.constant_power_kernel,
+                    slack_vector=self.constant_power_slack_projection,
+                    nominal_power=S_chunk,
+                    voltage_guess=self.v_0,
+                    time_steps=ts_chunk,
+                    node_count=self.nb,
                     iterations=iterations,
                     tolerance=tolerance,
                 )
@@ -545,28 +538,28 @@ class GridTensor:
 
             else:
                 start_time_pre_pf = perf_counter()
-                self._F_, self._W_ = self._pre_power_flow_tensor(
-                    flag_all_constant_impedance_is_zero=self.flag_all_constant_impedance_is_zero,
-                    flag_all_constant_current_is_zero=self.flag_all_constant_current_is_zero,
-                    flag_all_constant_powers_are_ones=self.flag_all_constant_powers_are_ones,
-                    ts_n=ts_chunk,
-                    nb=self.nb,
-                    S_nom=S_chunk,
-                    alpha_Z=self.alpha_Z,
-                    alpha_I=self.alpha_I,
-                    alpha_P=self.alpha_P,
-                    Yds=self.Yds,
-                    Ydd=self.Ydd,
+                self.tensor_factor_matrix, self.tensor_bias_vector = self._tensor_prefactor_builder(
+                    all_constant_impedance_zero=self.flag_all_constant_impedance_is_zero,
+                    all_constant_current_zero=self.flag_all_constant_current_is_zero,
+                    all_constant_power_one=self.flag_all_constant_powers_are_ones,
+                    time_steps=ts_chunk,
+                    node_count=self.nb,
+                    nominal_power=S_chunk,
+                    alpha_z=self.alpha_Z,
+                    alpha_i=self.alpha_I,
+                    alpha_p=self.alpha_P,
+                    yds=self.Yds,
+                    ydd=self.Ydd,
                 )
                 end_time_pre_pf = perf_counter()
 
                 start_time_pf = perf_counter()
-                self.v_0, t_iterations = self._power_flow_tensor(
-                    _F_=self._F_,
-                    _W_=self._W_,
-                    v_0=self.v_0,
-                    ts_n=ts_chunk,
-                    nb=self.nb,
+                self.v_0, t_iterations = self._tensor_solver(
+                    tensor_factor_matrix=self.tensor_factor_matrix,
+                    tensor_bias_vector=self.tensor_bias_vector,
+                    voltage_guess=self.v_0,
+                    time_steps=ts_chunk,
+                    node_count=self.nb,
                     iterations=iterations,
                     tolerance=tolerance,
                 )
@@ -658,14 +651,14 @@ class GridTensor:
             -1,
         )
 
-        if self.constant_power_only:
+        if self.uses_constant_power_model:
             start_time_pre_pf = perf_counter()
             # No precomputing, the minimum matrix multiplication is done in the initialization of the object.
             end_time_pre_pf = perf_counter()
 
             start_time_pf = perf_counter()
-            V, iteration = self._power_flow_sam_sequential_constant_power_only(
-                B_inv=-self._K_,
+            V, iteration = self._sam_constant_power_solver(
+                B_inv=-self.constant_power_kernel,
                 C=self.Yds.flatten(),
                 v_0=self.v_0,
                 s_n=S_nom,
@@ -676,25 +669,25 @@ class GridTensor:
 
         else:
             start_time_pre_pf = perf_counter()
-            B_inv, C, S_nom = self._pre_power_flow_sam_sequential(
+            B_inv, C, S_nom = self._sam_prefactor_builder(
                 active_power,
                 reactive_power,
                 s_base=self.s_base,
-                alpha_Z=self.alpha_Z,
-                alpha_I=self.alpha_I,
-                Yds=self.Yds,
-                Ydd=self.Ydd,
-                nb=self.nb,
+                alpha_z=self.alpha_Z,
+                alpha_i=self.alpha_I,
+                yds=self.Yds,
+                ydd=self.Ydd,
+                node_count=self.nb,
             )
             end_time_pre_pf = perf_counter()
 
             start_time_pf = perf_counter()
-            V, iteration = self._power_flow_sam_sequential(
-                B_inv,
-                C,
-                v_0=self.v_0,
-                s_n=S_nom,
-                alpha_P=self.alpha_P,
+            V, iteration = self._sam_solver(
+                inverse_matrix_b=B_inv,
+                matrix_c=C,
+                voltage_guess=self.v_0,
+                nominal_power=S_nom,
+                alpha_p=self.alpha_P,
                 iterations=self.iterations,
                 tolerance=self.tolerance,
             )
