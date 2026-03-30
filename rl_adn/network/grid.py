@@ -16,13 +16,12 @@ from rl_adn.network.numbarize import (
     pre_power_flow_sam_sequential,
     pre_power_flow_tensor,
 )
-from rl_adn.network.utils import GPUPowerFlow, generate_network
+from rl_adn.network.utils import generate_network
 
 try:
     import psutil
 except ImportError:
     psutil = None
-from tqdm import trange
 
 
 class GridTensor:
@@ -40,7 +39,6 @@ class GridTensor:
     nodes_frame (pd.DataFrame): DataFrame containing node data. Default is None.
     lines_frame (pd.DataFrame): DataFrame containing line data. Default is None.
     numba (bool): Flag to enable or disable Numba JIT compilation. Default is True.
-    gpu_mode (bool): Flag to enable or disable GPU mode. Default is False.
     """
 
     def __init__(
@@ -56,7 +54,6 @@ class GridTensor:
         nodes_frame: pd.DataFrame = None,
         lines_frame: pd.DataFrame = None,
         numba=True,
-        gpu_mode=False,
     ):
 
         self.s_base = s_base
@@ -96,14 +93,12 @@ class GridTensor:
         self._power_flow_sam_sequential_constant_power_only = None
 
         self.is_numba_enabled = False
-        self.is_gpu_enabled = False
 
         if np.all(self.alpha_P) and not np.any(self.alpha_Z) and not np.any(self.alpha_I):
             self.constant_power_only = True
             self.start_time_pre_pf_tensor_constant_power_only = perf_counter()
 
-            # TODO: Change to sparse inverse.
-            self._K_ = np.array(-inv(self.Ydd_sparse).todense())  # Reduced version of -B^-1 (Reduced version of _F_)  TODO: check it exist .toarray()
+            self._K_ = -inv(self.Ydd_sparse).toarray()
             self._L_ = self._K_ @ self.Yds  # Reduced version of _W_
             self.end_time_pre_pf_tensor_constant_power_only = perf_counter()
         else:
@@ -116,10 +111,6 @@ class GridTensor:
             warnings.warn("Numba NOT enabled. Performance is greatly reduced.", RuntimeWarning)
             self.disable_numba()
             self.is_numba_enabled = False
-
-        if gpu_mode:
-            self.gpu_solver = GPUPowerFlow()
-            self.is_gpu_enabled = True
 
     def enable_numba(self):
         """
@@ -176,7 +167,6 @@ class GridTensor:
         """
         Resets the starting voltage values for power flow calculations to default flat start values.
         """
-        # TODO
         self.v_0 = np.ones((self.nb - 1, 1), dtype="complex128")  # Flat start  #2D array
 
     def _set_number_of_threads(self, threads):
@@ -238,18 +228,15 @@ class GridTensor:
         # build Ybus
         Ybus = Cf.T * Yf + Ct.T * Yt  # Full Ybus
 
-        # Dense matrices
-        # TODO
-        # TODO: This takes a lot of memory. Check if I can save it always as sparse for all methods.
         self._Ybus = Ybus.toarray()
         self.Yss = csr_matrix(Ybus[sl[0] - 1, sl[0] - 1], shape=(len(sl), len(sl))).toarray()
-        self.Ysd = np.array(Ybus[0, 1:].toarray())  # TODO: Here assume the slack is the first one?
+        self.Ysd = np.array(Ybus[0, 1:].toarray())
         self.Yds = self.Ysd.T
-        self.Ydd = np.array(Ybus[1:, 1:].toarray())  # TODO: This consumes a huge amount of memory
+        self.Ydd = np.array(Ybus[1:, 1:].toarray())
 
         self._Ybus_sparse = Ybus
         self.Yss_sparse = csr_matrix(Ybus[sl[0] - 1, sl[0] - 1], shape=(len(sl), len(sl)))
-        self.Ysd_sparse = Ybus[0, 1:]  # TODO: Here assume the slack is the first one?
+        self.Ysd_sparse = Ybus[0, 1:]
         self.Yds_sparse = csc_matrix(self.Ysd.T)
         self.Ydd_sparse = Ybus[1:, 1:]
 
@@ -314,10 +301,6 @@ class GridTensor:
                 the reminder: 2500-2000=500).
         """
 
-        # DIMENSION_BOUND =  500 * 5_000
-        # n_nodes = 4999
-        # n_steps = 3000
-
         TS_MAX = DIMENSION_BOUND // n_nodes
         if n_steps > TS_MAX:  # Chunk it
             (quotient, reminder) = divmod(n_steps, TS_MAX)
@@ -330,8 +313,6 @@ class GridTensor:
 
         else:  # The requested amount of TS is lower than the bound. So, everything is ok
             idx = [0, n_steps]
-
-        # print(idx)
 
         return idx
 
@@ -428,6 +409,7 @@ class GridTensor:
         tolerance: float = 1e-6,
         algorithm: str = "tensor",
         sparse_solver: str = "scipy",
+        show_progress: bool = False,
     ):
         """
         Run a power-flow solve for the provided active/reactive power inputs.
@@ -468,9 +450,6 @@ class GridTensor:
             pf_algorithm = self.run_pf_tensor
         elif algorithm == "hp-tensor":
             pf_algorithm = self.run_pf_tensor_hp_laurent
-        elif algorithm == "gpu-tensor":
-            pf_algorithm = self.run_pf_tensor
-            kwargs.update(compute="gpu")
         else:
             raise ValueError("Incorrect power flow algorithm selected")
 
@@ -480,6 +459,7 @@ class GridTensor:
             flat_start=flat_start,
             start_value=start_value,
             tolerance=tolerance,
+            show_progress=show_progress,
             **kwargs,
         )
 
@@ -499,17 +479,14 @@ class GridTensor:
         iterations: int = 100,
         tolerance: float = 1e-6,
         flat_start: bool = True,
-        compute: str = "cpu",
+        show_progress: bool = False,
     ) -> dict:
         if (active_power is not None) and (reactive_power is not None):
-            print("ok")
             assert len(active_power.shape) == 2, "Array must be two dimensional."
             assert len(reactive_power.shape) == 2, "Array must be two dimensional."
             assert active_power.shape[1] == reactive_power.shape[1] == self.nb - 1, "All nodes must have power values."
         else:
-            # active_power = self.P_file[np.newaxis, :
             reactive_power = self.Q_file[np.newaxis, :]
-            # print('zhong')
 
         self.ts_n = active_power.shape[0]  # Time steps to be simulated
         if flat_start:
@@ -530,30 +507,19 @@ class GridTensor:
         n_steps = S_nom.shape[0]
         n_nodes = S_nom.shape[1]
 
-        if compute == "cpu":
-            # print("CPU Solver selected")
-            self._power_flow_tensor_solver = self._power_flow_tensor_constant_power
-        elif compute == "gpu" and self.is_gpu_enabled is False:
-            warnings.warn("GPU library not found, falling back to CPU.")
-            self._power_flow_tensor_solver = self._power_flow_tensor_constant_power
-        elif compute == "gpu" and self.is_gpu_enabled is True:
-            # print("GPU Solver selected")
-            self._power_flow_tensor_solver = self.gpu_solver.power_flow_gpu
-
-        if compute == "cpu":
-            DIMENSION_BOUND = 500 * 100_000  # 5_000 x 10_000 did work. Empirical value for my machine
-        else:
-            DIMENSION_BOUND = 500 * 125_000  # 5_000 x 15_000 did work. Empirical value for my machine
+        self._power_flow_tensor_solver = self._power_flow_tensor_constant_power
+        DIMENSION_BOUND = 500 * 100_000
 
         idx = self._compute_chunks(DIMENSION_BOUND, n_nodes=n_nodes, n_steps=n_steps)
         n_chunks = len(idx) - 1
 
-        t = trange(n_chunks, desc="Chunk", leave=False)
-        for ii in t:
-            t.set_description(f"Chunk: {ii + 1} of {n_chunks}", refresh=True)
+        chunk_iterator = range(n_chunks)
+        if show_progress and n_chunks > 1:
+            from tqdm import trange
 
+            chunk_iterator = trange(n_chunks, desc="Chunk", leave=False)
+        for ii in chunk_iterator:
             ts_chunk = idx[ii + 1] - idx[ii]  # Size of the chunk
-            # TODO
 
             self.v_0 = np.ones((ts_chunk, self.nb - 1)) + 1j * np.zeros((ts_chunk, self.nb - 1))  # Flat start
 
@@ -578,7 +544,6 @@ class GridTensor:
                 end_time_pf = perf_counter()
 
             else:
-                # raise ValueError("This should not be running")
                 start_time_pre_pf = perf_counter()
                 self._F_, self._W_ = self._pre_power_flow_tensor(
                     flag_all_constant_impedance_is_zero=self.flag_all_constant_impedance_is_zero,
@@ -683,10 +648,8 @@ class GridTensor:
             reactive_power = self.Q_file
 
         if flat_start:
-            # TODO
             self.v_0 = np.ones((self.nb - 1, 1), dtype="complex128")  # 2D-Vector
         elif start_value is not None:
-            # TODO: Check the dimensions of the flat start
             self.v_0 = start_value  # User's start value
 
         active_power_pu = active_power / self.s_base  # Vector with all active power except slack
@@ -714,7 +677,7 @@ class GridTensor:
         else:
             start_time_pre_pf = perf_counter()
             B_inv, C, S_nom = self._pre_power_flow_sam_sequential(
-                active_power,  # TODO: Change the input to S_nom
+                active_power,
                 reactive_power,
                 s_base=self.s_base,
                 alpha_Z=self.alpha_Z,
