@@ -9,6 +9,7 @@ from urllib.request import urlopen
 from rl_adn import PowerNetEnv, make_env_config
 from rl_adn.dashboard import DashboardCallback, launch_dashboard
 from rl_adn.dashboard.layouts import get_feeder_layout
+from rl_adn.dashboard.narration import build_narration
 
 
 def test_dashboard_snapshot_is_available_after_reset_and_step():
@@ -44,6 +45,9 @@ def test_dashboard_callback_collects_events():
         assert payload["latest"] is not None
         assert payload["latest"]["event_type"] == "step"
         assert payload["history"]["steps"]
+        assert payload["history"]["dispatch_by_battery"]
+        assert payload["narration"]["zh"]["action"]
+        assert payload["narration"]["en"]["reason"]
     finally:
         callback.close()
 
@@ -70,10 +74,30 @@ def test_dashboard_api_returns_idle_then_live_state():
 def test_feeder_layout_counts_match_nodes():
     layout_34 = get_feeder_layout(34)
     layout_69 = get_feeder_layout(69)
+    assert layout_34["view"] == "single_line"
+    assert layout_69["view"] == "single_line"
     assert len(layout_34["positions"]) == 34
     assert len(layout_69["positions"]) == 69
     assert len(layout_34["base_edges"]) == 33
     assert len(layout_69["base_edges"]) == 68
+
+
+def test_narration_supports_bilingual_rule_output():
+    latest = {
+        "topology_scenario": "TP4",
+        "battery_nodes": [11, 15],
+        "battery_dispatch_kw": [25.0, -10.0],
+        "node_voltages_pu": [1.0, 0.972, 0.981],
+        "reward": -0.5,
+        "price": 31.2,
+    }
+    history = {
+        "reward": [0.1, -0.2, -0.5],
+    }
+    narration = build_narration(latest, history)
+    assert "action" in narration["zh"]
+    assert "reason" in narration["en"]
+    assert narration["zh"]["risk_level"] in {"stable", "watch", "critical"}
 
 
 def test_live_dashboard_example_runs_without_open_browser():

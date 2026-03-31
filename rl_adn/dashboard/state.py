@@ -5,6 +5,7 @@ from threading import Lock
 from typing import Any
 
 from rl_adn.dashboard.layouts import get_feeder_layout
+from rl_adn.dashboard.narration import build_narration
 
 
 class DashboardStateStore:
@@ -32,6 +33,8 @@ class DashboardStateStore:
             "voltage_max": [max(event["node_voltages_pu"]) if event["node_voltages_pu"] else None for event in events],
             "total_dispatch_kw": [sum(event["battery_dispatch_kw"] or []) for event in events],
             "soc_by_battery": {},
+            "dispatch_by_battery": {},
+            "scenario_markers": [],
         }
 
         if latest is not None:
@@ -39,11 +42,28 @@ class DashboardStateStore:
                 history["soc_by_battery"][str(battery_node)] = [
                     event["battery_soc"][node_index] if node_index < len(event["battery_soc"]) else None for event in events
                 ]
+                history["dispatch_by_battery"][str(battery_node)] = [
+                    (event["battery_dispatch_kw"][node_index] if event["battery_dispatch_kw"] and node_index < len(event["battery_dispatch_kw"]) else None)
+                    for event in events
+                ]
+
+        previous_scenario = None
+        for event in events:
+            if event["topology_scenario"] != previous_scenario:
+                history["scenario_markers"].append(
+                    {
+                        "step": event["step_index"],
+                        "scenario": event["topology_scenario"],
+                        "event_type": event["event_type"],
+                    }
+                )
+                previous_scenario = event["topology_scenario"]
 
         return {
             "status": "idle" if latest is None else ("finished" if latest["terminated"] or latest["truncated"] else "running"),
             "latest": latest,
             "layout": None if latest is None else get_feeder_layout(int(latest["feeder_id"].split("-")[0])),
             "history": history,
+            "narration": None if latest is None else build_narration(latest, history),
             "history_limit": self.history_limit,
         }

@@ -1,78 +1,181 @@
 <!DOCTYPE html>
-<html lang="en">
+<html lang="zh-CN">
   <head>
     <meta charset="utf-8" />
     <meta name="viewport" content="width=device-width, initial-scale=1" />
-    <title>RL-ADN Live Dashboard</title>
+    <title>RL-ADN Agentic Grid Console</title>
     <link rel="stylesheet" href="/styles.css" />
     <script src="https://cdn.plot.ly/plotly-2.35.2.min.js"></script>
   </head>
   <body>
     <main class="app-shell">
       <header class="hero">
-        <div>
-          <p class="eyebrow">RL-ADN / runtime dashboard</p>
-          <h1>Live topology-aware control surface.</h1>
-          <p class="lead">Watch feeder topology, voltages, dispatch, and reward evolve while an agent or rollout drives the environment.</p>
-        </div>
-        <div class="hero-badges">
-          <span data-status-pill>idle</span>
-          <span>local browser</span>
-          <span>single-env v1</span>
-        </div>
+        <section class="hero-copy">
+          <p class="eyebrow" data-i18n="heroEyebrow">RL-ADN / agentic grid console</p>
+          <h1 data-i18n="heroTitle">主动配电网的实时单线图监控屏。</h1>
+          <p class="lead" data-i18n="heroLead">让拓扑变化、节点电压、电池 dispatch 与 reward 在同一块控制屏里被看见，并由系统自动解释。</p>
+        </section>
+        <section class="hero-side">
+          <div class="toolbar">
+            <label class="toolbar-control">
+              <span data-i18n="language">语言</span>
+              <select data-language-select>
+                <option value="zh" selected>中文</option>
+                <option value="en">English</option>
+              </select>
+            </label>
+            <label class="toolbar-control">
+              <span data-i18n="historyWindow">历史窗口</span>
+              <select data-window-select>
+                <option value="all">All</option>
+                <option value="120">120</option>
+                <option value="60">60</option>
+                <option value="20">20</option>
+              </select>
+            </label>
+          </div>
+          <div class="hero-badges">
+            <span data-status-pill>idle</span>
+            <span data-i18n="localBrowser">本地浏览器</span>
+            <span data-i18n="singleEnv">单环境 v1</span>
+          </div>
+        </section>
       </header>
+
+      <section class="monitor-ribbon">
+        <article class="ribbon-card">
+          <span data-i18n="scenarioStatus">场景状态</span>
+          <strong data-topology-title>等待 rollout...</strong>
+          <small data-scenario-description>暂无激活拓扑。</small>
+        </article>
+        <article class="ribbon-card">
+          <span data-i18n="selectedNode">当前节点</span>
+          <strong data-selected-node>节点 1</strong>
+          <small data-selected-node-detail>暂无节点遥测。</small>
+        </article>
+        <article class="ribbon-card">
+          <span data-i18n="selectedBattery">当前电池</span>
+          <strong data-selected-battery>—</strong>
+          <small data-selected-battery-detail>暂无选中电池。</small>
+        </article>
+      </section>
+
       <section class="dashboard-grid">
         <aside class="panel control-panel">
-          <h2>Run state</h2>
+          <h2 data-i18n="runState">运行状态</h2>
           <dl class="info-grid">
-            <div><dt>Episode</dt><dd data-episode>—</dd></div>
-            <div><dt>Step</dt><dd data-step>—</dd></div>
-            <div><dt>Feeder</dt><dd data-feeder>—</dd></div>
-            <div><dt>Scenario</dt><dd data-scenario>—</dd></div>
-            <div><dt>Price</dt><dd data-price>—</dd></div>
-            <div><dt>Reward</dt><dd data-reward>—</dd></div>
+            <div><dt data-i18n="episode">轮次</dt><dd data-episode>-</dd></div>
+            <div><dt data-i18n="step">步数</dt><dd data-step>-</dd></div>
+            <div><dt data-i18n="feeder">馈线</dt><dd data-feeder>-</dd></div>
+            <div><dt data-i18n="scenario">场景</dt><dd data-scenario>-</dd></div>
+            <div><dt data-i18n="price">价格</dt><dd data-price>-</dd></div>
+            <div><dt data-i18n="reward">奖励</dt><dd data-reward>-</dd></div>
           </dl>
+
           <div class="snapshot-block">
-            <h3>Control</h3>
-            <p data-dispatch-summary>No dispatch yet.</p>
+            <h3 data-i18n="control">控制动作</h3>
+            <p data-dispatch-summary>暂无 dispatch。</p>
           </div>
+
           <div class="snapshot-block">
-            <h3>Reward breakdown</h3>
-            <p data-reward-breakdown>No reward available yet.</p>
+            <h3 data-i18n="rewardBreakdown">奖励拆解</h3>
+            <p data-reward-breakdown>暂无奖励信息。</p>
+          </div>
+
+          <div class="snapshot-block">
+            <h3 data-i18n="interaction">交互控制</h3>
+            <div class="control-stack">
+              <label class="toolbar-control inside">
+                <span data-i18n="batteryFocus">电池焦点</span>
+                <select data-battery-select></select>
+              </label>
+              <label class="toolbar-control inside">
+                <span data-i18n="chartMode">信号视图</span>
+                <select data-chart-mode-select>
+                  <option value="split" selected>Split</option>
+                  <option value="overlay">Overlay</option>
+                </select>
+              </label>
+            </div>
           </div>
         </aside>
+
         <section class="panel topology-panel">
           <div class="panel-head">
             <div>
-              <p class="eyebrow">Topology</p>
-              <h2 data-topology-title>Waiting for rollout…</h2>
+              <p class="eyebrow" data-i18n="topology">拓扑图</p>
+              <h2 data-topology-panel-title>等待 rollout...</h2>
             </div>
             <div class="mini-stats">
-              <span data-node-count>0 nodes</span>
-              <span data-edge-count>0 edges</span>
+              <span data-node-count>0 节点</span>
+              <span data-edge-count>0 激活边</span>
             </div>
           </div>
-          <svg class="topology-canvas" data-topology-canvas viewBox="0 0 1200 760" role="img" aria-label="Active feeder topology"></svg>
-        </section>
-        <aside class="panel telemetry-panel">
-          <h2>Telemetry</h2>
-          <div class="metric-stack">
-            <div class="metric-card"><span>Voltage min</span><strong data-vmin>—</strong></div>
-            <div class="metric-card"><span>Voltage max</span><strong data-vmax>—</strong></div>
-            <div class="metric-card"><span>SOC avg</span><strong data-soc-avg>—</strong></div>
-            <div class="metric-card"><span>Total dispatch</span><strong data-dispatch-total>—</strong></div>
+          <div class="topology-legend">
+            <span><i class="legend-chip nominal"></i><em data-i18n="legendNominal">正常支路</em></span>
+            <span><i class="legend-chip rewired"></i><em data-i18n="legendRewired">重构支路</em></span>
+            <span><i class="legend-chip retired"></i><em data-i18n="legendRetired">退役支路</em></span>
+            <span><i class="legend-chip battery"></i><em data-i18n="legendBattery">电池节点</em></span>
           </div>
-          <label class="battery-picker">
-            Battery SOC trace
-            <select data-battery-select></select>
-          </label>
+          <svg class="topology-canvas" data-topology-canvas viewBox="0 0 1400 820" role="img" aria-label="Active feeder single-line diagram"></svg>
+        </section>
+
+        <aside class="panel telemetry-panel">
+          <h2 data-i18n="telemetry">遥测指标</h2>
+          <div class="metric-stack">
+            <div class="metric-card"><span data-i18n="voltageMin">最低电压</span><strong data-vmin>-</strong></div>
+            <div class="metric-card"><span data-i18n="voltageMax">最高电压</span><strong data-vmax>-</strong></div>
+            <div class="metric-card"><span data-i18n="socAvg">平均 SOC</span><strong data-soc-avg>-</strong></div>
+            <div class="metric-card"><span data-i18n="totalDispatch">总 dispatch</span><strong data-dispatch-total>-</strong></div>
+            <div class="metric-card emphasis"><span data-i18n="selectedDispatch">焦点 dispatch</span><strong data-selected-dispatch>-</strong></div>
+            <div class="metric-card emphasis"><span data-i18n="selectedSoc">焦点 SOC</span><strong data-selected-soc>-</strong></div>
+          </div>
+
+          <div class="snapshot-block compact">
+            <h3 data-i18n="priceRewardFocus">价格 / 奖励聚焦</h3>
+            <p data-price-reward-summary>暂无价格与奖励趋势。</p>
+          </div>
+
+          <div class="narration-panel">
+            <div class="panel-head compact">
+              <div>
+                <p class="eyebrow" data-i18n="agentNarration">Agent 自动旁白</p>
+                <h2 data-i18n="agentNarrationTitle">系统解释</h2>
+              </div>
+            </div>
+            <div class="narration-block">
+              <span data-i18n="narrationAction">动作</span>
+              <p data-narration-action>系统正在等待新的环境状态。</p>
+            </div>
+            <div class="narration-block">
+              <span data-i18n="narrationReason">原因</span>
+              <p data-narration-reason>当前还没有足够的数据来解释控制意图。</p>
+            </div>
+            <div class="narration-block">
+              <span data-i18n="narrationRisk">风险</span>
+              <p data-narration-risk>当前没有检测到明确风险。</p>
+            </div>
+          </div>
         </aside>
       </section>
+
       <section class="charts-grid">
-        <div class="panel chart-panel"><h2>Reward over time</h2><div class="chart" id="reward-chart"></div></div>
-        <div class="panel chart-panel"><h2>Voltage band</h2><div class="chart" id="voltage-chart"></div></div>
-        <div class="panel chart-panel"><h2>Dispatch over time</h2><div class="chart" id="dispatch-chart"></div></div>
-        <div class="panel chart-panel"><h2>Battery SOC over time</h2><div class="chart" id="soc-chart"></div></div>
+        <div class="panel chart-panel">
+          <h2 data-i18n="rewardPriceChart">奖励与价格时序</h2>
+          <div class="chart" id="reward-chart"></div>
+        </div>
+        <div class="panel chart-panel">
+          <h2 data-i18n="voltageChart">电压区间</h2>
+          <div class="chart" id="voltage-chart"></div>
+        </div>
+        <div class="panel chart-panel">
+          <h2 data-i18n="dispatchChart">选中电池 dispatch</h2>
+          <div class="chart" id="dispatch-chart"></div>
+        </div>
+        <div class="panel chart-panel">
+          <h2 data-i18n="socChart">选中电池 SOC</h2>
+          <div class="chart" id="soc-chart"></div>
+        </div>
       </section>
     </main>
     <script src="/app.js"></script>
