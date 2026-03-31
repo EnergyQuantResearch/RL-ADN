@@ -267,8 +267,23 @@ body {
   fill: rgba(236, 243, 255, 0.92);
   font-family: "IBM Plex Sans", "Segoe UI Variable Text", sans-serif;
 }
-.graph-label { font-size: 12px; font-weight: 700; }
-.graph-node-metric { font-size: 11px; font-weight: 500; fill: rgba(180, 201, 221, 0.95); }
+.graph-label { font-size: 14px; font-weight: 700; }
+.graph-node-metric { font-size: 12px; font-weight: 600; fill: rgba(196, 215, 231, 0.96); }
+
+.graph-battery-card {
+  fill: rgba(7, 20, 31, 0.92);
+  stroke: rgba(255, 183, 3, 0.42);
+  stroke-width: 1.5;
+  rx: 10;
+  ry: 10;
+}
+
+.graph-battery-card-text {
+  font-family: "IBM Plex Sans", "Segoe UI Variable Text", sans-serif;
+  font-size: 12px;
+  font-weight: 600;
+  fill: rgba(243, 248, 255, 0.96);
+}
 
 .metric-stack {
   display: grid;

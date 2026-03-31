@@ -200,6 +200,36 @@
     group.appendChild(batteryGroup);
   }
 
+  function createBatteryCard(group, x, y, meta, soc, dispatch) {
+    const anchor = meta.battery_card_anchor || "start";
+    const cardX = x + meta.battery_card_dx;
+    const cardY = y + meta.battery_card_dy;
+    const width = 110;
+    const height = 36;
+    const rectX = anchor === "end" ? cardX - width : cardX;
+    const textX = anchor === "end" ? cardX - 10 : cardX + 10;
+    const card = createSvg("g", { class: "graph-battery-card-group" });
+    card.appendChild(createSvg("rect", { class: "graph-battery-card", x: rectX, y: cardY, width, height, rx: 10, ry: 10 }));
+    card.appendChild(createSvg("text", { class: "graph-battery-card-text", x: textX, y: cardY + 15, "text-anchor": anchor }, `SOC ${soc.toFixed(2)}`));
+    card.appendChild(createSvg("text", { class: "graph-battery-card-text", x: textX, y: cardY + 29, "text-anchor": anchor }, `${dispatch.toFixed(1)} kW`));
+    group.appendChild(card);
+  }
+
+  function getNodeMeta(layout, nodeId) {
+    return (layout.node_meta && layout.node_meta[String(nodeId)]) || {
+      anchor: "middle",
+      label_dx: 0,
+      label_dy: -18,
+      metric_dx: 0,
+      metric_dy: 24,
+      battery_icon_dx: 12,
+      battery_icon_dy: -28,
+      battery_card_dx: 12,
+      battery_card_dy: 42,
+      battery_card_anchor: "start",
+    };
+  }
+
   function voltageColor(value) {
     if (value == null) return "#dbe9ff";
     if (value < 0.95) return "#ff7b5f";
@@ -309,11 +339,14 @@
       const voltage = latest.node_voltages_pu[Number(nodeId) - 1];
       const isBattery = batteryNodes.has(nodeId);
       const isSelected = Number(nodeId) === selectedNode;
+      const meta = getNodeMeta(layout, nodeId);
+      const x = position.x * 1400;
+      const y = position.y * 820;
       const group = createSvg("g", { class: "graph-node-group" });
       const circle = createSvg("circle", {
         class: `graph-node${isSelected ? " is-selected" : ""}`,
-        cx: position.x * 1400,
-        cy: position.y * 820,
+        cx: x,
+        cy: y,
         r: isBattery ? 10 : layout.node_count <= 34 ? 7.5 : 6,
         fill: voltageColor(voltage),
         stroke: isBattery ? "#ff7b5f" : "rgba(22, 217, 194, 0.42)",
@@ -326,18 +359,41 @@
         render(lastPayload);
       });
       group.appendChild(circle);
-      if (isBattery) appendBatteryIcon(group, position.x * 1400, position.y * 820);
+      if (isBattery) appendBatteryIcon(group, x + meta.battery_icon_dx - 12, y + meta.battery_icon_dy + 28);
       canvas.appendChild(group);
 
-      canvas.appendChild(createSvg("text", { class: "graph-label", x: position.x * 1400 + 10, y: position.y * 820 - 10 }, nodeId));
-      canvas.appendChild(createSvg("text", { class: "graph-node-metric", x: position.x * 1400 + 10, y: position.y * 820 + 18 }, `|V| ${voltage.toFixed(3)}`));
+      canvas.appendChild(
+        createSvg(
+          "text",
+          {
+            class: "graph-label",
+            x: x + meta.label_dx,
+            y: y + meta.label_dy,
+            "text-anchor": meta.anchor,
+          },
+          nodeId
+        )
+      );
+      canvas.appendChild(
+        createSvg(
+          "text",
+          {
+            class: "graph-node-metric",
+            x: x + meta.metric_dx,
+            y: y + meta.metric_dy,
+            "text-anchor": meta.anchor,
+          },
+          `|V| ${voltage.toFixed(3)}`
+        )
+      );
 
       if (isBattery) {
         const batteryIndex = latest.battery_nodes.indexOf(Number(nodeId));
         const batteryDispatch = latest.battery_dispatch_kw ? latest.battery_dispatch_kw[batteryIndex] : null;
         const batterySoc = latest.battery_soc[batteryIndex];
-        const metricText = `SOC ${batterySoc.toFixed(2)}${batteryDispatch == null ? "" : ` | ${batteryDispatch.toFixed(1)}kW`}`;
-        canvas.appendChild(createSvg("text", { class: "graph-node-metric", x: position.x * 1400 + 10, y: position.y * 820 + 34 }, metricText));
+        if (batteryDispatch != null) {
+          createBatteryCard(canvas, x, y, meta, batterySoc, batteryDispatch);
+        }
       }
     });
   }
