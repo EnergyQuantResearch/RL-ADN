@@ -16,13 +16,12 @@ from rl_adn.network.numbarize import (
     pre_power_flow_sam_sequential,
     pre_power_flow_tensor,
 )
-from rl_adn.network.utils import GPUPowerFlow, generate_network
+from rl_adn.network.utils import generate_network
 
 try:
     import psutil
 except ImportError:
     psutil = None
-from tqdm import trange
 
 
 class GridTensor:
@@ -40,7 +39,6 @@ class GridTensor:
     nodes_frame (pd.DataFrame): DataFrame containing node data. Default is None.
     lines_frame (pd.DataFrame): DataFrame containing line data. Default is None.
     numba (bool): Flag to enable or disable Numba JIT compilation. Default is True.
-    gpu_mode (bool): Flag to enable or disable GPU mode. Default is False.
     """
 
     def __init__(
@@ -56,7 +54,6 @@ class GridTensor:
         nodes_frame: pd.DataFrame = None,
         lines_frame: pd.DataFrame = None,
         numba=True,
-        gpu_mode=False,
     ):
 
         self.s_base = s_base
@@ -83,31 +80,27 @@ class GridTensor:
         self._make_y_bus()
         self._compute_alphas()
         self.v_0 = None
-        self._F_ = None
-        self._W_ = None
+        self.tensor_factor_matrix = None
+        self.tensor_bias_vector = None
 
-        # Placeholder for the methods that are pre-compiled with numba.
-        self._power_flow_tensor_constant_power = None
-        self._pre_power_flow_tensor = None
-        self._power_flow_tensor = None
-
-        self._pre_power_flow_sam_sequential = None
-        self._power_flow_sam_sequential = None
-        self._power_flow_sam_sequential_constant_power_only = None
+        # Runtime-selected numerical kernels.
+        self._constant_power_tensor_solver = None
+        self._tensor_prefactor_builder = None
+        self._tensor_solver = None
+        self._sam_prefactor_builder = None
+        self._sam_solver = None
+        self._sam_constant_power_solver = None
 
         self.is_numba_enabled = False
-        self.is_gpu_enabled = False
 
         if np.all(self.alpha_P) and not np.any(self.alpha_Z) and not np.any(self.alpha_I):
-            self.constant_power_only = True
-            self.start_time_pre_pf_tensor_constant_power_only = perf_counter()
-
-            # TODO: Change to sparse inverse.
-            self._K_ = np.array(-inv(self.Ydd_sparse).todense())  # Reduced version of -B^-1 (Reduced version of _F_)  TODO: check it exist .toarray()
-            self._L_ = self._K_ @ self.Yds  # Reduced version of _W_
-            self.end_time_pre_pf_tensor_constant_power_only = perf_counter()
+            self.uses_constant_power_model = True
+            self.constant_power_prefactor_start_time = perf_counter()
+            self.constant_power_kernel = -inv(self.Ydd_sparse).toarray()
+            self.constant_power_slack_projection = self.constant_power_kernel @ self.Yds
+            self.constant_power_prefactor_end_time = perf_counter()
         else:
-            self.constant_power_only = False
+            self.uses_constant_power_model = False
 
         if numba:
             self.enable_numba()
@@ -117,33 +110,30 @@ class GridTensor:
             self.disable_numba()
             self.is_numba_enabled = False
 
-        if gpu_mode:
-            self.gpu_solver = GPUPowerFlow()
-            self.is_gpu_enabled = True
-
     def enable_numba(self):
         """
-        Disables Numba JIT compilation, reverting to standard Python execution.
+        Enable Numba-backed kernels for the available solver paths.
         """
         parallel = True
 
-        self._power_flow_tensor_constant_power = power_flow_tensor_constant_power
-        self._pre_power_flow_tensor = njit(pre_power_flow_tensor, parallel=parallel)
-        self._power_flow_tensor = njit(power_flow_tensor, parallel=parallel)
+        self._constant_power_tensor_solver = power_flow_tensor_constant_power
+        self._tensor_prefactor_builder = njit(pre_power_flow_tensor, parallel=parallel)
+        self._tensor_solver = njit(power_flow_tensor, parallel=parallel)
 
-        self._pre_power_flow_sam_sequential = njit(pre_power_flow_sam_sequential, parallel=parallel)
-        self._power_flow_sam_sequential = njit(power_flow_sam_sequential, parallel=parallel)
-        self._power_flow_sam_sequential_constant_power_only = njit(power_flow_sam_sequential_constant_power_only, parallel=parallel)
+        self._sam_prefactor_builder = njit(pre_power_flow_sam_sequential, parallel=parallel)
+        self._sam_solver = njit(power_flow_sam_sequential, parallel=parallel)
+        self._sam_constant_power_solver = njit(power_flow_sam_sequential_constant_power_only, parallel=parallel)
 
     def disable_numba(self):
+        """Fall back to the pure-Python numerical kernels."""
 
-        self._power_flow_tensor_constant_power = power_flow_tensor_constant_power
-        self._pre_power_flow_tensor = pre_power_flow_tensor
-        self._power_flow_tensor = power_flow_tensor
+        self._constant_power_tensor_solver = power_flow_tensor_constant_power
+        self._tensor_prefactor_builder = pre_power_flow_tensor
+        self._tensor_solver = power_flow_tensor
 
-        self._pre_power_flow_sam_sequential = pre_power_flow_sam_sequential
-        self._power_flow_sam_sequential = power_flow_sam_sequential
-        self._power_flow_sam_sequential_constant_power_only = power_flow_sam_sequential_constant_power_only
+        self._sam_prefactor_builder = pre_power_flow_sam_sequential
+        self._sam_solver = power_flow_sam_sequential
+        self._sam_constant_power_solver = power_flow_sam_sequential_constant_power_only
 
     @classmethod
     def generate_from_graph(cls, *, nodes=100, child=2, plot_graph=True, load_factor=2, line_factor=3, **kwargs):
@@ -176,7 +166,6 @@ class GridTensor:
         """
         Resets the starting voltage values for power flow calculations to default flat start values.
         """
-        # TODO
         self.v_0 = np.ones((self.nb - 1, 1), dtype="complex128")  # Flat start  #2D array
 
     def _set_number_of_threads(self, threads):
@@ -238,18 +227,15 @@ class GridTensor:
         # build Ybus
         Ybus = Cf.T * Yf + Ct.T * Yt  # Full Ybus
 
-        # Dense matrices
-        # TODO
-        # TODO: This takes a lot of memory. Check if I can save it always as sparse for all methods.
         self._Ybus = Ybus.toarray()
         self.Yss = csr_matrix(Ybus[sl[0] - 1, sl[0] - 1], shape=(len(sl), len(sl))).toarray()
-        self.Ysd = np.array(Ybus[0, 1:].toarray())  # TODO: Here assume the slack is the first one?
+        self.Ysd = np.array(Ybus[0, 1:].toarray())
         self.Yds = self.Ysd.T
-        self.Ydd = np.array(Ybus[1:, 1:].toarray())  # TODO: This consumes a huge amount of memory
+        self.Ydd = np.array(Ybus[1:, 1:].toarray())
 
         self._Ybus_sparse = Ybus
         self.Yss_sparse = csr_matrix(Ybus[sl[0] - 1, sl[0] - 1], shape=(len(sl), len(sl)))
-        self.Ysd_sparse = Ybus[0, 1:]  # TODO: Here assume the slack is the first one?
+        self.Ysd_sparse = Ybus[0, 1:]
         self.Yds_sparse = csc_matrix(self.Ysd.T)
         self.Ydd_sparse = Ybus[1:, 1:]
 
@@ -257,7 +243,10 @@ class GridTensor:
 
     def _compute_alphas(self):
         """
-        Computes alpha values for different load types in the grid. Assume P-1 and Z,I=0
+        Initialize ZIP load coefficients.
+
+        RL-ADN currently operates on the constant-power path, so the coefficients are
+        set to `P=1, I=0, Z=0`.
         """
         self.alpha_P = 1
         self.alpha_I = 0
@@ -314,10 +303,6 @@ class GridTensor:
                 the reminder: 2500-2000=500).
         """
 
-        # DIMENSION_BOUND =  500 * 5_000
-        # n_nodes = 4999
-        # n_steps = 3000
-
         TS_MAX = DIMENSION_BOUND // n_nodes
         if n_steps > TS_MAX:  # Chunk it
             (quotient, reminder) = divmod(n_steps, TS_MAX)
@@ -330,8 +315,6 @@ class GridTensor:
 
         else:  # The requested amount of TS is lower than the bound. So, everything is ok
             idx = [0, n_steps]
-
-        # print(idx)
 
         return idx
 
@@ -428,21 +411,14 @@ class GridTensor:
         tolerance: float = 1e-6,
         algorithm: str = "tensor",
         sparse_solver: str = "scipy",
+        show_progress: bool = False,
     ):
         """
         Run a power-flow solve for the provided active/reactive power inputs.
 
         The method accepts either batched tensors or a single-step vector and dispatches
-        to the selected solver implementation.
-                        "time_algorithm": Total time algorithm. time_algorithm = time_pre_pf + time_pf
-                        "iterations": Total number of iterations to converge.
-
-                        "convergence": Boolean indicating: True: Algorithm converged, False: it didn't.
-                        "iterations_log": NOT USED.
-                        "time_pre_pf_log": NOT USED.
-                        "time_pf_log": NOT USED.
-                        "convergence_log": NOT USED.
-                        }
+        to the selected solver implementation. It returns a dictionary containing the
+        complex voltage solution, timing statistics, and convergence metadata.
         """
 
         is_tensor = False
@@ -468,9 +444,6 @@ class GridTensor:
             pf_algorithm = self.run_pf_tensor
         elif algorithm == "hp-tensor":
             pf_algorithm = self.run_pf_tensor_hp_laurent
-        elif algorithm == "gpu-tensor":
-            pf_algorithm = self.run_pf_tensor
-            kwargs.update(compute="gpu")
         else:
             raise ValueError("Incorrect power flow algorithm selected")
 
@@ -480,6 +453,7 @@ class GridTensor:
             flat_start=flat_start,
             start_value=start_value,
             tolerance=tolerance,
+            show_progress=show_progress,
             **kwargs,
         )
 
@@ -499,17 +473,14 @@ class GridTensor:
         iterations: int = 100,
         tolerance: float = 1e-6,
         flat_start: bool = True,
-        compute: str = "cpu",
+        show_progress: bool = False,
     ) -> dict:
         if (active_power is not None) and (reactive_power is not None):
-            print("ok")
             assert len(active_power.shape) == 2, "Array must be two dimensional."
             assert len(reactive_power.shape) == 2, "Array must be two dimensional."
             assert active_power.shape[1] == reactive_power.shape[1] == self.nb - 1, "All nodes must have power values."
         else:
-            # active_power = self.P_file[np.newaxis, :
             reactive_power = self.Q_file[np.newaxis, :]
-            # print('zhong')
 
         self.ts_n = active_power.shape[0]  # Time steps to be simulated
         if flat_start:
@@ -530,78 +501,65 @@ class GridTensor:
         n_steps = S_nom.shape[0]
         n_nodes = S_nom.shape[1]
 
-        if compute == "cpu":
-            # print("CPU Solver selected")
-            self._power_flow_tensor_solver = self._power_flow_tensor_constant_power
-        elif compute == "gpu" and self.is_gpu_enabled is False:
-            warnings.warn("GPU library not found, falling back to CPU.")
-            self._power_flow_tensor_solver = self._power_flow_tensor_constant_power
-        elif compute == "gpu" and self.is_gpu_enabled is True:
-            # print("GPU Solver selected")
-            self._power_flow_tensor_solver = self.gpu_solver.power_flow_gpu
-
-        if compute == "cpu":
-            DIMENSION_BOUND = 500 * 100_000  # 5_000 x 10_000 did work. Empirical value for my machine
-        else:
-            DIMENSION_BOUND = 500 * 125_000  # 5_000 x 15_000 did work. Empirical value for my machine
+        DIMENSION_BOUND = 500 * 100_000
 
         idx = self._compute_chunks(DIMENSION_BOUND, n_nodes=n_nodes, n_steps=n_steps)
         n_chunks = len(idx) - 1
 
-        t = trange(n_chunks, desc="Chunk", leave=False)
-        for ii in t:
-            t.set_description(f"Chunk: {ii + 1} of {n_chunks}", refresh=True)
+        chunk_iterator = range(n_chunks)
+        if show_progress and n_chunks > 1:
+            from tqdm import trange
 
+            chunk_iterator = trange(n_chunks, desc="Chunk", leave=False)
+        for ii in chunk_iterator:
             ts_chunk = idx[ii + 1] - idx[ii]  # Size of the chunk
-            # TODO
 
             self.v_0 = np.ones((ts_chunk, self.nb - 1)) + 1j * np.zeros((ts_chunk, self.nb - 1))  # Flat start
 
             S_chunk = S_nom[idx[ii] : idx[ii + 1]]
 
-            if self.constant_power_only:
-                start_time_pre_pf = self.start_time_pre_pf_tensor_constant_power_only
+            if self.uses_constant_power_model:
+                start_time_pre_pf = self.constant_power_prefactor_start_time
                 # No pre-computing (Already done when creating the object)
-                end_time_pre_pf = self.end_time_pre_pf_tensor_constant_power_only
+                end_time_pre_pf = self.constant_power_prefactor_end_time
 
                 start_time_pf = perf_counter()
-                self.v_0, t_iterations = self._power_flow_tensor_solver(
-                    K=self._K_,
-                    L=self._L_,
-                    S=S_chunk,
-                    v0=self.v_0,
-                    ts=ts_chunk,
-                    nb=self.nb,
+                self.v_0, t_iterations = self._constant_power_tensor_solver(
+                    kernel_matrix=self.constant_power_kernel,
+                    slack_vector=self.constant_power_slack_projection,
+                    nominal_power=S_chunk,
+                    voltage_guess=self.v_0,
+                    time_steps=ts_chunk,
+                    node_count=self.nb,
                     iterations=iterations,
                     tolerance=tolerance,
                 )
                 end_time_pf = perf_counter()
 
             else:
-                # raise ValueError("This should not be running")
                 start_time_pre_pf = perf_counter()
-                self._F_, self._W_ = self._pre_power_flow_tensor(
-                    flag_all_constant_impedance_is_zero=self.flag_all_constant_impedance_is_zero,
-                    flag_all_constant_current_is_zero=self.flag_all_constant_current_is_zero,
-                    flag_all_constant_powers_are_ones=self.flag_all_constant_powers_are_ones,
-                    ts_n=ts_chunk,
-                    nb=self.nb,
-                    S_nom=S_chunk,
-                    alpha_Z=self.alpha_Z,
-                    alpha_I=self.alpha_I,
-                    alpha_P=self.alpha_P,
-                    Yds=self.Yds,
-                    Ydd=self.Ydd,
+                self.tensor_factor_matrix, self.tensor_bias_vector = self._tensor_prefactor_builder(
+                    all_constant_impedance_zero=self.flag_all_constant_impedance_is_zero,
+                    all_constant_current_zero=self.flag_all_constant_current_is_zero,
+                    all_constant_power_one=self.flag_all_constant_powers_are_ones,
+                    time_steps=ts_chunk,
+                    node_count=self.nb,
+                    nominal_power=S_chunk,
+                    alpha_z=self.alpha_Z,
+                    alpha_i=self.alpha_I,
+                    alpha_p=self.alpha_P,
+                    yds=self.Yds,
+                    ydd=self.Ydd,
                 )
                 end_time_pre_pf = perf_counter()
 
                 start_time_pf = perf_counter()
-                self.v_0, t_iterations = self._power_flow_tensor(
-                    _F_=self._F_,
-                    _W_=self._W_,
-                    v_0=self.v_0,
-                    ts_n=ts_chunk,
-                    nb=self.nb,
+                self.v_0, t_iterations = self._tensor_solver(
+                    tensor_factor_matrix=self.tensor_factor_matrix,
+                    tensor_bias_vector=self.tensor_bias_vector,
+                    voltage_guess=self.v_0,
+                    time_steps=ts_chunk,
+                    node_count=self.nb,
                     iterations=iterations,
                     tolerance=tolerance,
                 )
@@ -683,10 +641,8 @@ class GridTensor:
             reactive_power = self.Q_file
 
         if flat_start:
-            # TODO
             self.v_0 = np.ones((self.nb - 1, 1), dtype="complex128")  # 2D-Vector
         elif start_value is not None:
-            # TODO: Check the dimensions of the flat start
             self.v_0 = start_value  # User's start value
 
         active_power_pu = active_power / self.s_base  # Vector with all active power except slack
@@ -695,14 +651,14 @@ class GridTensor:
             -1,
         )
 
-        if self.constant_power_only:
+        if self.uses_constant_power_model:
             start_time_pre_pf = perf_counter()
             # No precomputing, the minimum matrix multiplication is done in the initialization of the object.
             end_time_pre_pf = perf_counter()
 
             start_time_pf = perf_counter()
-            V, iteration = self._power_flow_sam_sequential_constant_power_only(
-                B_inv=-self._K_,
+            V, iteration = self._sam_constant_power_solver(
+                B_inv=-self.constant_power_kernel,
                 C=self.Yds.flatten(),
                 v_0=self.v_0,
                 s_n=S_nom,
@@ -713,25 +669,25 @@ class GridTensor:
 
         else:
             start_time_pre_pf = perf_counter()
-            B_inv, C, S_nom = self._pre_power_flow_sam_sequential(
-                active_power,  # TODO: Change the input to S_nom
+            B_inv, C, S_nom = self._sam_prefactor_builder(
+                active_power,
                 reactive_power,
                 s_base=self.s_base,
-                alpha_Z=self.alpha_Z,
-                alpha_I=self.alpha_I,
-                Yds=self.Yds,
-                Ydd=self.Ydd,
-                nb=self.nb,
+                alpha_z=self.alpha_Z,
+                alpha_i=self.alpha_I,
+                yds=self.Yds,
+                ydd=self.Ydd,
+                node_count=self.nb,
             )
             end_time_pre_pf = perf_counter()
 
             start_time_pf = perf_counter()
-            V, iteration = self._power_flow_sam_sequential(
-                B_inv,
-                C,
-                v_0=self.v_0,
-                s_n=S_nom,
-                alpha_P=self.alpha_P,
+            V, iteration = self._sam_solver(
+                inverse_matrix_b=B_inv,
+                matrix_c=C,
+                voltage_guess=self.v_0,
+                nominal_power=S_nom,
+                alpha_p=self.alpha_P,
                 iterations=self.iterations,
                 tolerance=self.tolerance,
             )
