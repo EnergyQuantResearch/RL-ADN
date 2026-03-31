@@ -6,6 +6,7 @@ This directory is now script-first.
 
 - `quickstart_env.py`: minimal environment reset/step walkthrough
 - `custom_env_config.py`: typed config customization example
+- `live_dashboard_rollout.py`: runtime browser dashboard for topology, dispatch, and reward
 - `topology_scenarios.py`: Phase A topology scenario sampling example
 - `training_smoke.py`: minimal algorithm/environment interaction smoke
 

@@ -1,0 +1,60 @@
+:root {
+  --bg: #f4efe5;
+  --ink: #122130;
+  --muted: #617181;
+  --panel: rgba(255, 255, 255, 0.78);
+  --line: rgba(18, 33, 48, 0.1);
+  --accent: #12b3a8;
+  --accent-2: #0f7994;
+  --alert: #ff7b5f;
+  --shadow: 0 24px 64px rgba(18, 33, 48, 0.12);
+}
+
+* { box-sizing: border-box; }
+body {
+  margin: 0;
+  background:
+    radial-gradient(circle at top left, rgba(18, 179, 168, 0.12), transparent 28%),
+    radial-gradient(circle at top right, rgba(255, 123, 95, 0.12), transparent 22%),
+    linear-gradient(180deg, #f8f2e8 0%, #eef7f4 100%);
+  color: var(--ink);
+  font-family: "Aptos", "Segoe UI Variable Text", "IBM Plex Sans", sans-serif;
+}
+.app-shell { max-width: 1600px; margin: 0 auto; padding: 24px; }
+.hero { display: flex; justify-content: space-between; gap: 20px; align-items: end; margin-bottom: 20px; }
+.eyebrow { margin: 0 0 8px; text-transform: uppercase; letter-spacing: 0.18em; font-size: 12px; font-weight: 700; color: var(--accent-2); }
+.hero h1, .panel h2, .snapshot-block h3 { font-family: "Bahnschrift", "Aptos Display", sans-serif; }
+.hero h1 { font-size: clamp(34px, 4vw, 62px); line-height: 0.94; margin: 0; max-width: 11ch; letter-spacing: -0.05em; }
+.lead { margin: 12px 0 0; max-width: 68ch; color: var(--muted); line-height: 1.7; }
+.hero-badges { display: flex; flex-wrap: wrap; gap: 10px; }
+.hero-badges span, .mini-stats span { border: 1px solid var(--line); border-radius: 999px; padding: 8px 14px; background: rgba(255, 255, 255, 0.68); color: var(--muted); font-size: 14px; }
+.dashboard-grid, .charts-grid { display: grid; gap: 18px; }
+.dashboard-grid { grid-template-columns: minmax(240px, 0.9fr) minmax(0, 2.2fr) minmax(240px, 0.9fr); }
+.charts-grid { grid-template-columns: repeat(2, minmax(0, 1fr)); margin-top: 18px; }
+.panel { background: var(--panel); border: 1px solid rgba(255, 255, 255, 0.72); border-radius: 28px; backdrop-filter: blur(18px); box-shadow: var(--shadow); padding: 18px; }
+.panel h2 { margin: 0 0 14px; font-size: 26px; line-height: 1; }
+.panel-head { display: flex; justify-content: space-between; gap: 16px; align-items: end; }
+.info-grid { display: grid; grid-template-columns: repeat(2, minmax(0, 1fr)); gap: 12px; margin: 0; }
+.info-grid div, .snapshot-block, .metric-card, .battery-picker { background: rgba(255, 255, 255, 0.6); border: 1px solid var(--line); border-radius: 18px; padding: 12px; }
+.info-grid dt { color: var(--muted); font-size: 12px; text-transform: uppercase; letter-spacing: 0.12em; margin-bottom: 6px; }
+.info-grid dd { margin: 0; font-size: 18px; font-weight: 700; }
+.snapshot-block { margin-top: 14px; }
+.snapshot-block h3 { margin: 0 0 8px; font-size: 18px; }
+.snapshot-block p { margin: 0; color: var(--muted); line-height: 1.6; }
+.topology-panel { min-height: 720px; }
+.topology-canvas { width: 100%; height: 640px; display: block; margin-top: 12px; border-radius: 24px; background: radial-gradient(circle at 50% 0%, rgba(18, 179, 168, 0.12), transparent 34%), linear-gradient(180deg, #0f1621 0%, #152334 100%); }
+.graph-edge { stroke: rgba(146, 183, 205, 0.42); stroke-width: 3; stroke-linecap: round; fill: none; }
+.graph-edge.is-new { stroke: var(--accent); stroke-width: 5; }
+.graph-edge.is-retired { stroke: rgba(255, 123, 95, 0.44); stroke-dasharray: 9 10; }
+.graph-label { fill: rgba(236, 243, 255, 0.9); font-size: 13px; font-weight: 600; font-family: "IBM Plex Sans", "Segoe UI Variable Text", sans-serif; }
+.metric-stack { display: grid; grid-template-columns: repeat(2, minmax(0, 1fr)); gap: 12px; }
+.metric-card span { display: block; color: var(--muted); font-size: 12px; text-transform: uppercase; letter-spacing: 0.12em; margin-bottom: 8px; }
+.metric-card strong { font-size: 28px; font-family: "Bahnschrift", "Aptos Display", sans-serif; }
+.battery-picker { margin-top: 14px; display: grid; gap: 10px; color: var(--muted); font-size: 14px; }
+.battery-picker select { width: 100%; padding: 10px 12px; border-radius: 12px; border: 1px solid var(--line); background: rgba(255, 255, 255, 0.85); }
+.chart { min-height: 260px; }
+@media (max-width: 1200px) {
+  .dashboard-grid, .charts-grid { grid-template-columns: 1fr; }
+  .topology-panel { min-height: auto; }
+  .topology-canvas { height: 540px; }
+}

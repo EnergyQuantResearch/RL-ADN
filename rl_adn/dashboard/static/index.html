@@ -1,0 +1,80 @@
+<!DOCTYPE html>
+<html lang="en">
+  <head>
+    <meta charset="utf-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1" />
+    <title>RL-ADN Live Dashboard</title>
+    <link rel="stylesheet" href="/styles.css" />
+    <script src="https://cdn.plot.ly/plotly-2.35.2.min.js"></script>
+  </head>
+  <body>
+    <main class="app-shell">
+      <header class="hero">
+        <div>
+          <p class="eyebrow">RL-ADN / runtime dashboard</p>
+          <h1>Live topology-aware control surface.</h1>
+          <p class="lead">Watch feeder topology, voltages, dispatch, and reward evolve while an agent or rollout drives the environment.</p>
+        </div>
+        <div class="hero-badges">
+          <span data-status-pill>idle</span>
+          <span>local browser</span>
+          <span>single-env v1</span>
+        </div>
+      </header>
+      <section class="dashboard-grid">
+        <aside class="panel control-panel">
+          <h2>Run state</h2>
+          <dl class="info-grid">
+            <div><dt>Episode</dt><dd data-episode>—</dd></div>
+            <div><dt>Step</dt><dd data-step>—</dd></div>
+            <div><dt>Feeder</dt><dd data-feeder>—</dd></div>
+            <div><dt>Scenario</dt><dd data-scenario>—</dd></div>
+            <div><dt>Price</dt><dd data-price>—</dd></div>
+            <div><dt>Reward</dt><dd data-reward>—</dd></div>
+          </dl>
+          <div class="snapshot-block">
+            <h3>Control</h3>
+            <p data-dispatch-summary>No dispatch yet.</p>
+          </div>
+          <div class="snapshot-block">
+            <h3>Reward breakdown</h3>
+            <p data-reward-breakdown>No reward available yet.</p>
+          </div>
+        </aside>
+        <section class="panel topology-panel">
+          <div class="panel-head">
+            <div>
+              <p class="eyebrow">Topology</p>
+              <h2 data-topology-title>Waiting for rollout…</h2>
+            </div>
+            <div class="mini-stats">
+              <span data-node-count>0 nodes</span>
+              <span data-edge-count>0 edges</span>
+            </div>
+          </div>
+          <svg class="topology-canvas" data-topology-canvas viewBox="0 0 1200 760" role="img" aria-label="Active feeder topology"></svg>
+        </section>
+        <aside class="panel telemetry-panel">
+          <h2>Telemetry</h2>
+          <div class="metric-stack">
+            <div class="metric-card"><span>Voltage min</span><strong data-vmin>—</strong></div>
+            <div class="metric-card"><span>Voltage max</span><strong data-vmax>—</strong></div>
+            <div class="metric-card"><span>SOC avg</span><strong data-soc-avg>—</strong></div>
+            <div class="metric-card"><span>Total dispatch</span><strong data-dispatch-total>—</strong></div>
+          </div>
+          <label class="battery-picker">
+            Battery SOC trace
+            <select data-battery-select></select>
+          </label>
+        </aside>
+      </section>
+      <section class="charts-grid">
+        <div class="panel chart-panel"><h2>Reward over time</h2><div class="chart" id="reward-chart"></div></div>
+        <div class="panel chart-panel"><h2>Voltage band</h2><div class="chart" id="voltage-chart"></div></div>
+        <div class="panel chart-panel"><h2>Dispatch over time</h2><div class="chart" id="dispatch-chart"></div></div>
+        <div class="panel chart-panel"><h2>Battery SOC over time</h2><div class="chart" id="soc-chart"></div></div>
+      </section>
+    </main>
+    <script src="/app.js"></script>
+  </body>
+</html>

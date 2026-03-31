@@ -8,7 +8,7 @@ import torch.onnx
 from torch import Tensor
 
 from rl_adn.algorithms.Agent import AgentBase
-from rl_adn.algorithms.env_api import reset_env, step_env
+from rl_adn.algorithms.env_api import reset_env_with_info, step_env_with_info
 from rl_adn.algorithms.utility import Config, ReplayBuffer, build_mlp
 
 
@@ -195,7 +195,7 @@ class AgentSAC(AgentBase):
         # here target entropy can be negaticve
         self.target_entropy = np.log(action_dim)
 
-    def explore_one_env(self, env, horizon_len: int, if_random: bool = False) -> [Tensor]:
+    def explore_one_env(self, env, horizon_len: int, if_random: bool = False, callback=None) -> [Tensor]:
         """
         Explores a given environment for a specified horizon length.
 
@@ -214,7 +214,9 @@ class AgentSAC(AgentBase):
         rewards = torch.zeros((horizon_len, self.num_envs), dtype=torch.float32).to(self.device)
         dones = torch.zeros((horizon_len, self.num_envs), dtype=torch.bool).to(self.device)
 
-        ary_state = reset_env(env)
+        ary_state, info = reset_env_with_info(env)
+        if callback is not None:
+            callback.on_reset(ary_state, info, env)
         get_action = self.act.get_action
         for i in range(horizon_len):
             state = torch.as_tensor(ary_state, dtype=torch.float32, device=self.device)
@@ -224,8 +226,16 @@ class AgentSAC(AgentBase):
             actions[i] = action
 
             ary_action = action.detach().cpu().numpy()
-            next_state, reward, done, _ = step_env(env, ary_action)
-            ary_state = reset_env(env) if done else next_state
+            next_state, reward, terminated, truncated, info = step_env_with_info(env, ary_action)
+            if callback is not None:
+                callback.on_step(next_state, reward, terminated, truncated, info, env, ary_action)
+            done = bool(terminated or truncated)
+            if done:
+                ary_state, info = reset_env_with_info(env)
+                if callback is not None:
+                    callback.on_reset(ary_state, info, env)
+            else:
+                ary_state = next_state
 
             rewards[i] = reward
             dones[i] = done

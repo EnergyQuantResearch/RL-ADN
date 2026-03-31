@@ -44,6 +44,14 @@ Run the script-style quickstart:
 py -3 examples/quickstart_env.py
 ```
 
+Run the live local dashboard:
+
+```bash
+py -3 examples/live_dashboard_rollout.py --steps 12
+```
+
+This starts a local browser dashboard showing the active topology, node voltages, battery dispatch, SOC, and reward traces while a rollout interacts with the environment.
+
 ## Topology Scenarios
 
 Phase A adds curated topology scenario pools for the `34-bus` and `69-bus` feeders:

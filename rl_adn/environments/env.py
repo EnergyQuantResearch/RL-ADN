@@ -99,6 +99,8 @@ class PowerNetEnv(gym.Env[np.ndarray, np.ndarray]):
         self.current_observation: ObservationSnapshot | None = None
         self.current_precontrol_snapshot: PowerFlowSnapshot | None = None
         self.last_reward_breakdown: RewardBreakdown | None = None
+        self._last_dashboard_snapshot: dict[str, Any] | None = None
+        self.baseline_edges = get_active_edges(self._baseline_line_info)
 
         self._apply_topology(self.topology_config.scenario_id)
 
@@ -115,6 +117,14 @@ class PowerNetEnv(gym.Env[np.ndarray, np.ndarray]):
         self._episode_done = False
         self._reset_batteries()
         self.current_observation, self.current_slot_features, self.current_precontrol_snapshot = self._observe_current_slot()
+        self._last_dashboard_snapshot = self._build_dashboard_snapshot(
+            slot_features=self.current_slot_features,
+            power_flow_snapshot=self.current_precontrol_snapshot,
+            battery_dispatch_kw=None,
+            reward=None,
+            terminated=False,
+            truncated=False,
+        )
         return self.current_observation.normalized_state.copy(), self._build_info()
 
     def step(self, action: np.ndarray) -> tuple[np.ndarray, float, bool, bool, dict[str, Any]]:
@@ -144,6 +154,14 @@ class PowerNetEnv(gym.Env[np.ndarray, np.ndarray]):
 
         truncated = self.current_time >= self.episode_length - 1
         terminated = False
+        self._last_dashboard_snapshot = self._build_dashboard_snapshot(
+            slot_features=self.current_slot_features,
+            power_flow_snapshot=post_control_snapshot,
+            battery_dispatch_kw=battery_dispatch_kw,
+            reward=reward_breakdown.total,
+            terminated=terminated,
+            truncated=truncated,
+        )
         info = self._build_info(post_control_snapshot=post_control_snapshot, battery_dispatch_kw=battery_dispatch_kw)
 
         if truncated:
@@ -173,6 +191,22 @@ class PowerNetEnv(gym.Env[np.ndarray, np.ndarray]):
             "node_ids": np.arange(1, self.node_count + 1, dtype=np.int64),
             "active_line_data": self.active_line_info[["FROM", "TO", "R", "X", "B", "STATUS", "TAP"]].to_dict("records"),
         }
+
+    def get_dashboard_snapshot(self) -> dict[str, Any]:
+        if self._last_dashboard_snapshot is None:
+            raise RuntimeError("Dashboard snapshot is not available before reset()")
+        snapshot = self._last_dashboard_snapshot
+        result: dict[str, Any] = {}
+        for key, value in snapshot.items():
+            if isinstance(value, np.ndarray):
+                result[key] = value.copy()
+            elif isinstance(value, list):
+                result[key] = list(value)
+            elif isinstance(value, dict):
+                result[key] = dict(value)
+            else:
+                result[key] = value
+        return result
 
     def render(self) -> None:
         return None
@@ -265,6 +299,46 @@ class PowerNetEnv(gym.Env[np.ndarray, np.ndarray]):
             battery_nodes=self.battery_nodes,
             scaler=self.state_scaler,
         )
+
+    def _build_dashboard_snapshot(
+        self,
+        *,
+        slot_features: SlotFeatures,
+        power_flow_snapshot: PowerFlowSnapshot,
+        battery_dispatch_kw: np.ndarray | None,
+        reward: float | None,
+        terminated: bool,
+        truncated: bool,
+    ) -> dict[str, Any]:
+        battery_soc = np.array([self.batteries[node_index].SOC() for node_index in self.battery_nodes], dtype=np.float32)
+        active_power_kw = slot_features.active_power_kw.astype(np.float32, copy=True)
+        renewable_active_power_kw = slot_features.renewable_active_power_kw.astype(np.float32, copy=True)
+        return {
+            "feeder_id": self.feeder_id,
+            "topology_scenario": self.current_scenario.scenario_id,
+            "node_count": self.node_count,
+            "battery_nodes": list(self.battery_nodes),
+            "active_edges": [list(edge) for edge in self.active_edges],
+            "baseline_edges": [list(edge) for edge in self.baseline_edges],
+            "node_voltages_pu": power_flow_snapshot.node_voltages_pu.astype(np.float32, copy=True),
+            "battery_soc": battery_soc,
+            "battery_dispatch_kw": None if battery_dispatch_kw is None else battery_dispatch_kw.astype(np.float32, copy=True),
+            "active_power_kw": active_power_kw,
+            "renewable_active_power_kw": renewable_active_power_kw,
+            "net_load_kw": active_power_kw - renewable_active_power_kw,
+            "price": float(slot_features.price),
+            "current_time": self.current_time,
+            "reward": reward,
+            "reward_breakdown": None
+            if self.last_reward_breakdown is None or reward is None
+            else {
+                "economic": float(self.last_reward_breakdown.economic),
+                "voltage_penalty": float(self.last_reward_breakdown.voltage_penalty),
+                "saved_money": float(self.last_reward_breakdown.saved_money),
+            },
+            "terminated": terminated,
+            "truncated": truncated,
+        }
 
     def _build_info(
         self,

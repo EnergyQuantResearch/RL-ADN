@@ -7,7 +7,7 @@ import torch
 from torch import Tensor, nn
 from torch.nn.utils import clip_grad_norm_
 
-from rl_adn.algorithms.env_api import reset_env, step_env
+from rl_adn.algorithms.env_api import reset_env, reset_env_with_info, step_env, step_env_with_info
 from rl_adn.algorithms.utility import Config, ReplayBuffer, build_mlp, get_optim_param
 
 
@@ -81,7 +81,7 @@ class AgentBase:
         """save and load"""
         self.save_attr_names = {"act", "act_target", "act_optimizer", "cri", "cri_target", "cri_optimizer"}
 
-    def explore_one_env(self, env, horizon_len: int, if_random: bool = False) -> Tuple[Tensor, ...]:
+    def explore_one_env(self, env, horizon_len: int, if_random: bool = False, callback=None) -> Tuple[Tensor, ...]:
         """
         Collect trajectories through actor-environment interaction for a single environment.
 
@@ -100,6 +100,11 @@ class AgentBase:
         dones = torch.zeros((horizon_len, self.num_envs), dtype=torch.bool).to(self.device)
 
         state = self.last_state  # state.shape == (1, state_dim) for a single env.
+        if state is None:
+            ary_state, info = reset_env_with_info(env)
+            if callback is not None:
+                callback.on_reset(ary_state, info, env)
+            state = torch.as_tensor(ary_state, dtype=torch.float32, device=self.device).unsqueeze(0)
 
         get_action = self.act.get_action
         for t in range(horizon_len):
@@ -107,8 +112,14 @@ class AgentBase:
             states[t] = state
 
             ary_action = action[0].detach().cpu().numpy()
-            ary_state, reward, done, _ = step_env(env, ary_action)  # next_state
-            ary_state = reset_env(env) if done else ary_state  # ary_state.shape == (state_dim, )
+            ary_state, reward, terminated, truncated, info = step_env_with_info(env, ary_action)  # next_state
+            if callback is not None:
+                callback.on_step(ary_state, reward, terminated, truncated, info, env, ary_action)
+            done = bool(terminated or truncated)
+            if done:
+                ary_state, info = reset_env_with_info(env)
+                if callback is not None:
+                    callback.on_reset(ary_state, info, env)
             state = torch.as_tensor(ary_state, dtype=torch.float32, device=self.device).unsqueeze(0)
 
             actions[t] = action
@@ -121,7 +132,7 @@ class AgentBase:
         undones = 1.0 - dones.type(torch.float32)
         return states, actions, rewards, undones
 
-    def explore_vec_env(self, env, horizon_len: int, if_random: bool = False) -> Tuple[Tensor, ...]:
+    def explore_vec_env(self, env, horizon_len: int, if_random: bool = False, callback=None) -> Tuple[Tensor, ...]:
         """
         Collect trajectories through actor-environment interaction for a vectorized environment.
 
@@ -133,6 +144,9 @@ class AgentBase:
         Returns:
             Tuple[Tensor, ...]: A tuple containing states, actions, rewards, and undones.
         """
+
+        if callback is not None:
+            raise ValueError("Dashboard callbacks currently support only single-environment exploration")
 
         states = torch.zeros((horizon_len, self.num_envs, self.state_dim), dtype=torch.float32).to(self.device)
         actions = torch.zeros((horizon_len, self.num_envs, self.action_dim), dtype=torch.float32).to(self.device)
