@@ -117,7 +117,16 @@
             <span><i class="legend-chip retired"></i><em data-i18n="legendRetired">退役支路</em></span>
             <span><i class="legend-chip battery"></i><em data-i18n="legendBattery">电池节点</em></span>
           </div>
-          <svg class="topology-canvas" data-topology-canvas viewBox="0 0 1400 820" role="img" aria-label="Active feeder single-line diagram"></svg>
+          <div class="topology-stage" data-topology-stage>
+            <svg class="topology-canvas" data-topology-canvas viewBox="0 0 1400 820" role="img" aria-label="Active feeder single-line diagram"></svg>
+            <div class="hover-card" data-hover-card hidden>
+              <div class="hover-card-title" data-hover-title>Node</div>
+              <div class="hover-card-line" data-hover-voltage>Voltage</div>
+              <div class="hover-card-line" data-hover-scenario>Scenario</div>
+              <div class="hover-card-line" data-hover-battery hidden>Battery</div>
+              <div class="hover-card-line" data-hover-risk>Risk</div>
+            </div>
+          </div>
         </section>
 
         <aside class="panel telemetry-panel">
@@ -134,6 +143,11 @@
           <div class="snapshot-block compact">
             <h3 data-i18n="priceRewardFocus">价格 / 奖励聚焦</h3>
             <p data-price-reward-summary>暂无价格与奖励趋势。</p>
+          </div>
+
+          <div class="snapshot-block compact inspector-panel">
+            <h3 data-i18n="inspector">焦点检查</h3>
+            <p data-inspector-summary>点击节点后在这里查看详细信息。</p>
           </div>
 
           <div class="narration-panel">

@@ -21,7 +21,7 @@ def _set_path(positions: dict[int, tuple[float, float]], nodes: list[int], *, st
         positions[node] = (start_x + dx * index, start_y + dy * index)
 
 
-def _default_node_meta(node_count: int) -> dict[int, dict[str, float | str]]:
+def _default_node_meta(node_count: int) -> dict[int, dict[str, float | str | bool]]:
     return {
         node: {
             "anchor": "middle",
@@ -29,34 +29,48 @@ def _default_node_meta(node_count: int) -> dict[int, dict[str, float | str]]:
             "label_dy": -18.0,
             "metric_dx": 0.0,
             "metric_dy": 24.0,
+            "hover_dx": 18.0,
+            "hover_dy": -18.0,
+            "hover_anchor": "start",
             "battery_icon_dx": 12.0,
             "battery_icon_dy": -28.0,
             "battery_card_dx": 12.0,
             "battery_card_dy": 42.0,
             "battery_card_anchor": "start",
+            "show_voltage": False,
         }
         for node in range(1, node_count + 1)
     }
 
 
-def _apply_side(meta: dict[int, dict[str, float | str]], nodes: list[int], *, side: str) -> None:
+def _apply_side(meta: dict[int, dict[str, float | str | bool]], nodes: list[int], *, side: str) -> None:
     if side == "right":
-      label_dx, metric_dx, anchor = 12.0, 12.0, "start"
-      icon_dx, card_dx, card_anchor = 14.0, 14.0, "start"
+        label_dx, metric_dx, anchor = 12.0, 12.0, "start"
+        hover_dx, hover_anchor = 20.0, "start"
+        icon_dx, card_dx, card_anchor = 14.0, 14.0, "start"
     elif side == "left":
-      label_dx, metric_dx, anchor = -12.0, -12.0, "end"
-      icon_dx, card_dx, card_anchor = -42.0, -16.0, "end"
+        label_dx, metric_dx, anchor = -12.0, -12.0, "end"
+        hover_dx, hover_anchor = -18.0, "end"
+        icon_dx, card_dx, card_anchor = -42.0, -16.0, "end"
     else:
-      label_dx, metric_dx, anchor = 0.0, 0.0, "middle"
-      icon_dx, card_dx, card_anchor = 14.0, 14.0, "start"
+        label_dx, metric_dx, anchor = 0.0, 0.0, "middle"
+        hover_dx, hover_anchor = 18.0, "start"
+        icon_dx, card_dx, card_anchor = 14.0, 14.0, "start"
 
     for node in nodes:
         meta[node]["anchor"] = anchor
         meta[node]["label_dx"] = label_dx
         meta[node]["metric_dx"] = metric_dx
+        meta[node]["hover_dx"] = hover_dx
+        meta[node]["hover_anchor"] = hover_anchor
         meta[node]["battery_icon_dx"] = icon_dx
         meta[node]["battery_card_dx"] = card_dx
         meta[node]["battery_card_anchor"] = card_anchor
+
+
+def _mark_voltage(meta: dict[int, dict[str, float | str | bool]], nodes: list[int]) -> None:
+    for node in nodes:
+        meta[node]["show_voltage"] = True
 
 
 def _build_34_single_line_layout() -> tuple[dict[int, tuple[float, float]], dict[int, dict[str, float | str]]]:
@@ -81,6 +95,7 @@ def _build_34_single_line_layout() -> tuple[dict[int, tuple[float, float]], dict
         _apply_side(meta, [node], side="right")
     for node in [31, 33]:
         _apply_side(meta, [node], side="right")
+    _mark_voltage(meta, [1, 3, 4, 6, 7, 8, 10, 11, 13, 15, 17, 19, 21, 23, 25, 26, 28, 29, 31, 33])
 
     return positions, meta
 
@@ -112,6 +127,7 @@ def _build_69_single_line_layout() -> tuple[dict[int, tuple[float, float]], dict
         _apply_side(meta, [node], side="left")
     for node in [55, 57, 59, 61, 63, 65]:
         _apply_side(meta, [node], side="left")
+    _mark_voltage(meta, [1, 4, 8, 12, 18, 24, 28, 29, 33, 37, 43, 47, 50, 52, 54, 58, 62, 66, 67, 69])
 
     return positions, meta
 

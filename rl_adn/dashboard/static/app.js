@@ -53,6 +53,7 @@
       noDispatch: "暂无 dispatch。",
       noReward: "暂无奖励信息。",
       noPriceTrend: "暂无价格与奖励趋势。",
+      inspector: "焦点检查",
       nodeLabel: "节点",
       batteryLabel: "电池节点",
       running: "运行中",
@@ -117,6 +118,7 @@
       noDispatch: "No dispatch yet.",
       noReward: "No reward available yet.",
       noPriceTrend: "No price-reward trend yet.",
+      inspector: "Inspector",
       nodeLabel: "Node",
       batteryLabel: "Battery node",
       running: "running",
@@ -145,6 +147,7 @@
   const nodeCountValue = document.querySelector("[data-node-count]");
   const edgeCountValue = document.querySelector("[data-edge-count]");
   const scenarioDescription = document.querySelector("[data-scenario-description]");
+  const topologyStage = document.querySelector("[data-topology-stage]");
   const canvas = document.querySelector("[data-topology-canvas]");
   const vminValue = document.querySelector("[data-vmin]");
   const vmaxValue = document.querySelector("[data-vmax]");
@@ -161,19 +164,34 @@
   const selectedBatteryLabel = document.querySelector("[data-selected-battery]");
   const selectedBatteryDetail = document.querySelector("[data-selected-battery-detail]");
   const priceRewardSummary = document.querySelector("[data-price-reward-summary]");
+  const inspectorSummary = document.querySelector("[data-inspector-summary]");
   const narrationAction = document.querySelector("[data-narration-action]");
   const narrationReason = document.querySelector("[data-narration-reason]");
   const narrationRisk = document.querySelector("[data-narration-risk]");
+  const hoverCard = document.querySelector("[data-hover-card]");
+  const hoverTitle = document.querySelector("[data-hover-title]");
+  const hoverVoltage = document.querySelector("[data-hover-voltage]");
+  const hoverScenario = document.querySelector("[data-hover-scenario]");
+  const hoverBattery = document.querySelector("[data-hover-battery]");
+  const hoverRisk = document.querySelector("[data-hover-risk]");
 
   let locale = "zh";
   let historyWindow = "all";
   let chartMode = "split";
   let selectedBattery = null;
-  let selectedNode = 1;
+  let selectedNode = null;
+  let hoveredNode = null;
   let lastPayload = null;
 
   function t(key) {
     return translations[locale][key] || translations.zh[key] || key;
+  }
+
+  function localRiskLabel(voltage) {
+    if (voltage == null) return t("noNode");
+    if (voltage < 0.95 || voltage > 1.05) return locale === "zh" ? "越界" : "violation";
+    if (voltage < 0.975 || voltage > 1.025) return locale === "zh" ? "临界" : "watch";
+    return locale === "zh" ? "稳定" : "stable";
   }
 
   function edgeKey(edge) {
@@ -249,7 +267,43 @@
     });
     chartModeSelect.options[0].textContent = t("split");
     chartModeSelect.options[1].textContent = t("overlay");
+    if (!lastPayload) {
+      inspectorSummary.textContent = locale === "zh" ? "点击节点后在这里查看详细信息。" : "Click a node to inspect details here.";
+    }
     if (lastPayload) render(lastPayload);
+  }
+
+  function showHoverCard(latest, layout, nodeId) {
+    const position = layout.positions[String(nodeId)];
+    const meta = getNodeMeta(layout, nodeId);
+    const voltage = latest.node_voltages_pu[nodeId - 1];
+    const stageRect = topologyStage.getBoundingClientRect();
+    const cardWidth = 220;
+    const leftBase = position.x * stageRect.width + meta.hover_dx;
+    const topBase = position.y * stageRect.height + meta.hover_dy;
+    hoverTitle.textContent = `${t("nodeLabel")} ${nodeId}`;
+    hoverVoltage.textContent = locale === "zh" ? `电压：${voltage.toFixed(4)} pu` : `Voltage: ${voltage.toFixed(4)} pu`;
+    hoverScenario.textContent = locale === "zh" ? `场景：${latest.topology_scenario}` : `Scenario: ${latest.topology_scenario}`;
+    const batteryIndex = latest.battery_nodes.indexOf(nodeId);
+    if (batteryIndex >= 0) {
+      const batteryDispatch = latest.battery_dispatch_kw ? latest.battery_dispatch_kw[batteryIndex] : null;
+      const batterySoc = latest.battery_soc[batteryIndex];
+      hoverBattery.hidden = false;
+      hoverBattery.textContent = locale === "zh"
+        ? `电池：SOC ${batterySoc.toFixed(2)} | ${batteryDispatch == null ? "-" : batteryDispatch.toFixed(1)} kW`
+        : `Battery: SOC ${batterySoc.toFixed(2)} | ${batteryDispatch == null ? "-" : batteryDispatch.toFixed(1)} kW`;
+    } else {
+      hoverBattery.hidden = true;
+    }
+    hoverRisk.textContent = locale === "zh" ? `风险：${localRiskLabel(voltage)}` : `Risk: ${localRiskLabel(voltage)}`;
+    const left = meta.hover_anchor === "end" ? leftBase - cardWidth : leftBase;
+    hoverCard.style.left = `${Math.max(12, left)}px`;
+    hoverCard.style.top = `${Math.max(12, topBase)}px`;
+    hoverCard.hidden = false;
+  }
+
+  function hideHoverCard() {
+    hoverCard.hidden = true;
   }
 
   function trimHistory(history) {
@@ -312,6 +366,7 @@
     const baselineEdgeKeys = new Set((layout.base_edges || []).map(edgeKey));
     const activeEdgeKeys = new Set((latest.active_edges || []).map(edgeKey));
     const batteryNodes = new Set((latest.battery_nodes || []).map(String));
+    const activeNode = hoveredNode || selectedNode;
 
     (layout.base_edges || []).forEach((edge) => {
       if (activeEdgeKeys.has(edgeKey(edge))) return;
@@ -338,7 +393,7 @@
     Object.entries(layout.positions).forEach(([nodeId, position]) => {
       const voltage = latest.node_voltages_pu[Number(nodeId) - 1];
       const isBattery = batteryNodes.has(nodeId);
-      const isSelected = Number(nodeId) === selectedNode;
+      const isSelected = Number(nodeId) === activeNode;
       const meta = getNodeMeta(layout, nodeId);
       const x = position.x * 1400;
       const y = position.y * 820;
@@ -353,9 +408,21 @@
         "stroke-width": isBattery ? 3.2 : 2.2,
       });
       circle.appendChild(createSvg("title", {}, `${t("nodeLabel")} ${nodeId} | ${voltage.toFixed(4)} pu`));
+      circle.addEventListener("mouseenter", () => {
+        hoveredNode = Number(nodeId);
+        showHoverCard(latest, layout, Number(nodeId));
+        render(lastPayload);
+      });
+      circle.addEventListener("mouseleave", () => {
+        hoveredNode = null;
+        hideHoverCard();
+        render(lastPayload);
+      });
       circle.addEventListener("click", () => {
+        hoveredNode = null;
         selectedNode = Number(nodeId);
         if (isBattery) selectedBattery = nodeId;
+        hideHoverCard();
         render(lastPayload);
       });
       group.appendChild(circle);
@@ -374,20 +441,22 @@
           nodeId
         )
       );
-      canvas.appendChild(
-        createSvg(
-          "text",
-          {
-            class: "graph-node-metric",
-            x: x + meta.metric_dx,
-            y: y + meta.metric_dy,
-            "text-anchor": meta.anchor,
-          },
-          `|V| ${voltage.toFixed(3)}`
-        )
-      );
+      if (meta.show_voltage || isSelected) {
+        canvas.appendChild(
+          createSvg(
+            "text",
+            {
+              class: "graph-node-metric",
+              x: x + meta.metric_dx,
+              y: y + meta.metric_dy,
+              "text-anchor": meta.anchor,
+            },
+            `|V| ${voltage.toFixed(3)}`
+          )
+        );
+      }
 
-      if (isBattery) {
+      if (isBattery && Number(nodeId) === selectedNode) {
         const batteryIndex = latest.battery_nodes.indexOf(Number(nodeId));
         const batteryDispatch = latest.battery_dispatch_kw ? latest.battery_dispatch_kw[batteryIndex] : null;
         const batterySoc = latest.battery_soc[batteryIndex];
@@ -416,10 +485,11 @@
       dispatchTotalValue.textContent = "-";
       selectedDispatchValue.textContent = "-";
       selectedSocValue.textContent = "-";
-      selectedNodeLabel.textContent = `${t("nodeLabel")} ${selectedNode}`;
+      selectedNodeLabel.textContent = `${t("nodeLabel")} -`;
       selectedNodeDetail.textContent = t("noNode");
       selectedBatteryLabel.textContent = "-";
       selectedBatteryDetail.textContent = t("noBattery");
+      inspectorSummary.textContent = locale === "zh" ? "点击节点后在这里查看详细信息。" : "Click a node to inspect details here.";
       narrationAction.textContent = t("waiting");
       narrationReason.textContent = t("noReward");
       narrationRisk.textContent = t("noScenario");
@@ -450,9 +520,13 @@
     socAvgValue.textContent = socAvg == null ? "-" : socAvg.toFixed(4);
     dispatchTotalValue.textContent = `${dispatchTotal.toFixed(2)} kW`;
 
-    const selectedVoltage = latest.node_voltages_pu[selectedNode - 1];
-    selectedNodeLabel.textContent = `${t("nodeLabel")} ${selectedNode}`;
+    const inspectorNode = selectedNode || hoveredNode;
+    const selectedVoltage = inspectorNode == null ? null : latest.node_voltages_pu[inspectorNode - 1];
+    selectedNodeLabel.textContent = inspectorNode == null ? `${t("nodeLabel")} -` : `${t("nodeLabel")} ${inspectorNode}`;
     selectedNodeDetail.textContent = selectedVoltage == null ? t("noNode") : `${selectedVoltage.toFixed(4)} pu`;
+    inspectorSummary.textContent = selectedVoltage == null
+      ? (locale === "zh" ? "点击节点后在这里查看详细信息。" : "Click a node to inspect details here.")
+      : (locale === "zh" ? `节点电压 ${selectedVoltage.toFixed(4)} pu，风险等级 ${localRiskLabel(selectedVoltage)}。` : `Voltage ${selectedVoltage.toFixed(4)} pu, risk ${localRiskLabel(selectedVoltage)}.`);
 
     const batteryIndex = selectedBattery ? latest.battery_nodes.indexOf(Number(selectedBattery)) : -1;
     if (batteryIndex >= 0) {
@@ -595,6 +669,14 @@
   chartModeSelect.addEventListener("change", () => {
     chartMode = chartModeSelect.value;
     if (lastPayload) render(lastPayload);
+  });
+
+  canvas.addEventListener("click", (event) => {
+    if (event.target === canvas) {
+      selectedNode = null;
+      hideHoverCard();
+      if (lastPayload) render(lastPayload);
+    }
   });
 
   applyTranslations();
